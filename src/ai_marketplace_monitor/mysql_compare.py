@@ -10,12 +10,13 @@ fb_listings.
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass, field
 from logging import Logger
 from typing import Any, Dict, List, Optional, Tuple
 
 from .listing import Listing
-from .utils import hilight
+from .utils import cache, hilight
 
 
 @dataclass
@@ -59,6 +60,11 @@ class MySQLConfig:
     # Connection timeout (seconds); avoid hanging if MySQL is unreachable
     connection_timeout: int = 10
 
+    # When true and DB has no zip for city/state, call geocoding API (Nominatim) to get zip
+    geocode_fallback: bool = False
+    # Nominatim asks for 1 req/sec; we sleep this many seconds after each API call
+    geocode_rate_limit_seconds: float = 1.0
+
     def connection_dict(self) -> Dict[str, Any]:
         return {
             "host": self.host,
@@ -80,14 +86,19 @@ class ComparisonResult:
 
 
 def _parse_price(price_str: str) -> Optional[float]:
-    """Extract numeric price from listing price string (e.g. '$180' or '€ 200')."""
+    """Extract numeric price from listing price string (e.g. '$180', '$30,000 - $32,000'). Uses first number found for ranges."""
     if not price_str or price_str == "**unspecified**":
         return None
-    cleaned = re.sub(r"[^\d.,]", "", price_str.replace(",", ""))
-    try:
-        return float(cleaned) if cleaned else None
-    except ValueError:
-        return None
+    # Find all numbers (with optional commas: 30,000 or 30000)
+    numbers = re.findall(r"[\d,]+(?:\.\d+)?", price_str)
+    for n in numbers:
+        cleaned = n.replace(",", "").strip()
+        if cleaned:
+            try:
+                return float(cleaned)
+            except ValueError:
+                continue
+    return None
 
 
 def _parse_beds_baths_year(listing: Listing) -> Tuple[Optional[int], Optional[float], Optional[int]]:
@@ -183,11 +194,104 @@ class MySQLCompare:
                 pass
             self._client = None
 
+    def _geocode_city_state_to_zip(self, city: str, state: str) -> Optional[str]:
+        """Call OpenStreetMap Nominatim to get a zip for city, state. Results are cached. Rate-limited to 1 req/sec."""
+        if not city and not state:
+            return None
+        query = f"{city or ''},{state or ''},USA".strip(" ,")
+        if not query or query == ",USA":
+            return None
+        normalized = re.sub(r"\s+", " ", query.lower()).strip()
+        cache_key = ("geocode_zip", normalized)
+        try:
+            cached = cache.get(cache_key)
+            if cached is not None:
+                if self.logger:
+                    self.logger.debug(f"""{hilight("[MySQL-debug]", "info")} Geocode cache hit: {normalized} -> {cached}""")
+                return str(cached) if cached else None
+        except Exception:
+            pass
+        try:
+            import requests  # type: ignore
+
+            url = "https://nominatim.openstreetmap.org/search"
+            params = {"q": query, "format": "json", "addressdetails": 1, "limit": 1}
+            headers = {"User-Agent": "ai-marketplace-monitor/1.0 (location lookup)"}
+            resp = requests.get(url, params=params, headers=headers, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            if not data or not isinstance(data, list):
+                time.sleep(max(0, self.config.geocode_rate_limit_seconds))
+                return None
+            first = data[0]
+            address = first.get("address") or {}
+            postcode = address.get("postcode")
+            if postcode:
+                zip_code = str(postcode).strip()
+                if re.match(r"^\d{5}(?:-\d{4})?$", zip_code):
+                    zip_code = zip_code[:5]
+                try:
+                    cache.set(cache_key, zip_code, tag="geocode_zip")
+                except Exception:
+                    pass
+                if self.logger:
+                    self.logger.info(
+                        f"""{hilight("[MySQL-debug]", "succ")} Geocode API: {hilight(repr(query))} -> zip={zip_code}"""
+                    )
+                time.sleep(max(0, self.config.geocode_rate_limit_seconds))
+                return zip_code
+        except Exception as e:
+            if self.logger:
+                self.logger.warning(
+                    f"""{hilight("[MySQL]", "fail")} Geocode API failed for {repr(query)}: {e}"""
+                )
+            time.sleep(max(0, self.config.geocode_rate_limit_seconds))
+        return None
+
+    def _zip_from_city_state(self, cursor: Any, city: str, state: str) -> Optional[str]:
+        """Look up a zip from city+state using the properties table (or location_lookup if configured)."""
+        if not city and not state:
+            return None
+        if not _safe_table(self.config.properties_table):
+            return None
+        p_t = self.config.properties_table
+        try:
+            if city and state:
+                cursor.execute(
+                    f"""SELECT zip FROM `{p_t}` WHERE LOWER(TRIM(city)) = LOWER(TRIM(%s)) AND LOWER(TRIM(state)) = LOWER(TRIM(%s)) AND zip IS NOT NULL AND zip != '' LIMIT 1""",
+                    (city, state),
+                )
+            elif state:
+                cursor.execute(
+                    f"""SELECT zip FROM `{p_t}` WHERE LOWER(TRIM(state)) = LOWER(TRIM(%s)) AND zip IS NOT NULL AND zip != '' LIMIT 1""",
+                    (state,),
+                )
+            else:
+                return None
+            row = cursor.fetchone()
+            if row:
+                z = row.get("zip", row[0]) if isinstance(row, dict) else row[0]
+                return str(z).strip() if z else None
+        except Exception as e:
+            if self.logger:
+                self.logger.debug(f"""{hilight("[MySQL-debug]", "fail")} city/state lookup failed: {e}""")
+        return None
+
     def _resolve_location(self, cursor: Any, listing: Listing) -> Tuple[Optional[str], Optional[int], Optional[int]]:
-        """Resolve listing.location to (zip, county_id, region_id) using zip_county and counties."""
+        """Resolve listing.location to (zip, county_id, region_id) using zip_county and counties. When no zip in string, try city+state -> zip from properties."""
         loc = (listing.location or "").strip()
         zip_match = re.search(r"\b(\d{5})(?:-\d{4})?\b", loc)
         zip_code = zip_match.group(1) if zip_match else None
+        if not zip_code:
+            city, state, _ = self._parse_location_parts(loc)
+            if self.config.use_sales_comps and _safe_table(self.config.properties_table):
+                zip_code = self._zip_from_city_state(cursor, city or "", state or "")
+                if zip_code and self.logger:
+                    self.logger.info(
+                        f"""{hilight("[MySQL-debug]", "succ")} Location: city/state DB lookup {hilight(repr(loc)[:50])} -> zip={zip_code}"""
+                    )
+            if not zip_code and self.config.geocode_fallback and (city or state):
+                zip_code = self._geocode_city_state_to_zip(city or "", state or "")
         if self.logger:
             self.logger.info(
                 f"""{hilight("[MySQL-debug]", "info")} Location: listing.location={hilight(repr(loc)[:80])} -> zip={hilight(str(zip_code))}"""

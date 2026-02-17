@@ -59,6 +59,8 @@ class OllamaMySQLConfig(OllamaConfig):
             fb_listings_table=m.get("fb_listings_table", "fb_listings"),
             insert_all_evaluated=m.get("insert_all_evaluated", False),
             connection_timeout=int(m.get("connection_timeout", 10)),
+            geocode_fallback=m.get("geocode_fallback", False),
+            geocode_rate_limit_seconds=float(m.get("geocode_rate_limit_seconds", 1.0)),
         )
 
 

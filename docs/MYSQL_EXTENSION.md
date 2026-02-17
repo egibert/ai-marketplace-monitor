@@ -62,6 +62,10 @@ max_rows = 10
 insert_into_fb = true
 fb_listings_table = "fb_listings"
 
+# When DB has no zip for city/state, call Nominatim to get zip (optional)
+# geocode_fallback = true
+# geocode_rate_limit_seconds = 1.0
+
 output_format = "full"
 
 [item.homes]
@@ -89,6 +93,8 @@ Parsed from **title** and **description** (e.g. “3 bed”, “2 bath”, “bu
 - **listing.location** is parsed for a 5-digit **zip** (e.g. “Houston, TX 77001” or “77001”).
 - **zip_county** gives **county_id**; **counties** gives **region_id**.
 - Sales comps are queried in order: first by **zip**, then by **county**, then by **region** until results are found.
+- **City/state → zip fallback:** When there’s no 5-digit zip in the listing text, the code looks up a zip from **city + state** using your **properties** table: it finds one row with matching `city` and `state` and uses that row’s `zip`. So if you have Zillow properties for "Freedom, PA", sales comps can still run. Ensure `properties` uses the same style as Facebook (e.g. state as "PA" not "Pennsylvania") for best matching.
+- **Geocode API fallback:** If the DB still has no zip (e.g. no matching row in **properties**), you can enable **geocode_fallback** in `[ai.xxx.mysql]`. The code will call **OpenStreetMap Nominatim** with the listing’s city and state to get a US postcode. Results are cached and rate-limited (1 request per second by default). Set **geocode_rate_limit_seconds** (default 1.0) to comply with Nominatim’s usage policy.
 
 ### 3. Sales comps query
 
@@ -146,6 +152,8 @@ Parsed from **title** and **description** (e.g. “3 bed”, “2 bath”, “bu
 | **comparison_query**  | Custom SQL (placeholders {title}, {price}, {location}, {item_name}). Overrides built-in comparison when set. |
 | **max_rows**          | Max rows for FB comparison (default 10). |
 | **output_format**     | DB context in notifications: "full", "short", or "none". |
+| **geocode_fallback**  | When true and DB has no zip for city/state, call Nominatim API to get zip (default false). |
+| **geocode_rate_limit_seconds** | Seconds to wait after each Nominatim call (default 1.0). |
 
 ---
 
