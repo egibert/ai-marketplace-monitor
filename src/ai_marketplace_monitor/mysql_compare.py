@@ -60,8 +60,8 @@ class MySQLConfig:
     # Connection timeout (seconds); avoid hanging if MySQL is unreachable
     connection_timeout: int = 10
 
-    # When true and DB has no zip for city/state, call geocoding API (Nominatim) to get zip
-    geocode_fallback: bool = False
+    # When true (default), resolve city/state -> zip via Nominatim first; DB is fallback. More reliable than DB-only.
+    geocode_fallback: bool = True
     # Nominatim asks for 1 req/sec; we sleep this many seconds after each API call
     geocode_rate_limit_seconds: float = 1.0
 
@@ -278,20 +278,24 @@ class MySQLCompare:
         return None
 
     def _resolve_location(self, cursor: Any, listing: Listing) -> Tuple[Optional[str], Optional[int], Optional[int]]:
-        """Resolve listing.location to (zip, county_id, region_id) using zip_county and counties. When no zip in string, try city+state -> zip from properties."""
+        """Resolve listing.location to (zip, county_id, region_id). When no zip in string: try geocode (Nominatim) first, then city+state -> zip from properties as fallback."""
         loc = (listing.location or "").strip()
         zip_match = re.search(r"\b(\d{5})(?:-\d{4})?\b", loc)
         zip_code = zip_match.group(1) if zip_match else None
         if not zip_code:
             city, state, _ = self._parse_location_parts(loc)
-            if self.config.use_sales_comps and _safe_table(self.config.properties_table):
+            if (city or state) and self.config.geocode_fallback:
+                zip_code = self._geocode_city_state_to_zip(city or "", state or "")
+                if zip_code and self.logger:
+                    self.logger.info(
+                        f"""{hilight("[MySQL-debug]", "succ")} Location: geocode {hilight(repr(loc)[:50])} -> zip={zip_code}"""
+                    )
+            if not zip_code and self.config.use_sales_comps and _safe_table(self.config.properties_table):
                 zip_code = self._zip_from_city_state(cursor, city or "", state or "")
                 if zip_code and self.logger:
                     self.logger.info(
-                        f"""{hilight("[MySQL-debug]", "succ")} Location: city/state DB lookup {hilight(repr(loc)[:50])} -> zip={zip_code}"""
+                        f"""{hilight("[MySQL-debug]", "succ")} Location: city/state DB fallback {hilight(repr(loc)[:50])} -> zip={zip_code}"""
                     )
-            if not zip_code and self.config.geocode_fallback and (city or state):
-                zip_code = self._geocode_city_state_to_zip(city or "", state or "")
         if self.logger:
             self.logger.info(
                 f"""{hilight("[MySQL-debug]", "info")} Location: listing.location={hilight(repr(loc)[:80])} -> zip={hilight(str(zip_code))}"""
