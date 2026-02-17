@@ -12,6 +12,7 @@ else:
     import tomli as tomllib
 
 from .ai import DeepSeekBackend, OllamaBackend, OpenAIBackend, TAIConfig
+from .ai_ollama_mysql import OllamaMySQLBackend
 from .facebook import FacebookMarketplace
 from .marketplace import TItemConfig, TMarketplaceConfig
 from .notification import NotificationConfig
@@ -24,6 +25,7 @@ supported_ai_backends = {
     "deepseek": DeepSeekBackend,
     "openai": OpenAIBackend,
     "ollama": OllamaBackend,
+    "ollama_mysql": OllamaMySQLBackend,
 }
 
 
