@@ -109,8 +109,10 @@ Parsed from **title** and **description** (e.g. “3 bed”, “2 bath”, “bu
 
 ### 6. Insert into fb_listings
 
-- When a listing **passes the rating threshold** and is about to be notified, the monitor calls `on_listing_accepted` for each AI agent.
-- The Ollama+MySQL backend inserts (or updates by **external_id** = listing.id): title, description, asking_price, url, city, state, zip, beds, baths, county_id, region_id when available.
+- **By default** inserts run only when a listing **passes the rating threshold** (and is about to be notified). If no listings pass (e.g. threshold 4 and all get 2–3), **fb_listings stays empty**.
+- Set **insert_all_evaluated = true** in `[ai.xxx.mysql]` to insert **every evaluated listing** (regardless of score). Use this to populate fb_listings so you have data for comparison.
+- The backend inserts (or updates by **external_id** = listing.id): title, description, asking_price, url, city, state, zip, beds, baths, county_id, region_id when available.
+- Logs: `[MySQL] Inserting listing <id> into fb_listings...` and either `Inserted/updated fb_listing <id>` or `Insert fb_listing failed: <error>`. If you see no insert logs, either no listings passed the threshold (and insert_all_evaluated is false) or insert_into_fb is false.
 
 ---
 
@@ -138,7 +140,8 @@ Parsed from **title** and **description** (e.g. “3 bed”, “2 bath”, “bu
 | **year_tolerance**    | ± years for year_built filter (default 5). |
 | **comparison_table**  | Table for FB comparison (e.g. fb_listings). |
 | **title_column**, **price_column** | Columns for FB comparison (e.g. title, asking_price). |
-| **insert_into_fb**    | Insert accepted listings into fb_listings (default false). |
+| **insert_into_fb**    | Insert listings into fb_listings (default false). |
+| **insert_all_evaluated** | When true, insert every evaluated listing (not only accepted). Use to populate fb_listings (default false). |
 | **fb_listings_table** | Table name for insert (default fb_listings). |
 | **comparison_query**  | Custom SQL (placeholders {title}, {price}, {location}, {item_name}). Overrides built-in comparison when set. |
 | **max_rows**          | Max rows for FB comparison (default 10). |

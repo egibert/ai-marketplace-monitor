@@ -16,6 +16,7 @@ from .ai import AIResponse, OllamaBackend, OllamaConfig
 from .listing import Listing
 from .marketplace import TItemConfig, TMarketplaceConfig
 from .mysql_compare import MySQLCompare, MySQLConfig
+from .utils import hilight
 
 
 @dataclass
@@ -56,6 +57,7 @@ class OllamaMySQLConfig(OllamaConfig):
             year_tolerance=int(m.get("year_tolerance", 5)),
             insert_into_fb=m.get("insert_into_fb", False),
             fb_listings_table=m.get("fb_listings_table", "fb_listings"),
+            insert_all_evaluated=m.get("insert_all_evaluated", False),
             connection_timeout=int(m.get("connection_timeout", 10)),
         )
 
@@ -129,11 +131,13 @@ class OllamaMySQLBackend(OllamaBackend):
         response = super().evaluate(listing, item_config, marketplace_config)
         if self._mysql is None:
             return response
+        mysql_cfg = getattr(self.config, "get_mysql_config", lambda: None)() if hasattr(self.config, "get_mysql_config") else None
+        if mysql_cfg and mysql_cfg.insert_into_fb and mysql_cfg.insert_all_evaluated:
+            self._mysql.insert_fb_listing(listing)
         comparison = self._mysql.fetch_comparison(listing, item_name=item_config.name)
         if response.comment != AIResponse.NOT_EVALUATED:
             comment = response.comment
             if comparison and comparison.summary:
-                mysql_cfg = getattr(self.config, "get_mysql_config", lambda: None)() if hasattr(self.config, "get_mysql_config") else None
                 out_fmt = (mysql_cfg and getattr(mysql_cfg, "output_format", None)) or "full"
                 if out_fmt != "none":
                     db_text = comparison.summary.replace("\n", " ").strip()

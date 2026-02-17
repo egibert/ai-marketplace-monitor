@@ -53,6 +53,8 @@ class MySQLConfig:
     # --- Insert accepted listings into fb_listings
     insert_into_fb: bool = False
     fb_listings_table: str = "fb_listings"
+    # When true, insert every evaluated listing (not only accepted). Use to populate fb_listings.
+    insert_all_evaluated: bool = False
 
     # Connection timeout (seconds); avoid hanging if MySQL is unreachable
     connection_timeout: int = 10
@@ -456,6 +458,10 @@ class MySQLCompare:
         """Insert listing into fb_listings (external_id, title, description, asking_price, url, beds, baths, county_id, region_id when available)."""
         if not self.config.enabled or not self.config.insert_into_fb or not _safe_table(self.config.fb_listings_table):
             return False
+        if self.logger:
+            self.logger.info(
+                f"""{hilight("[MySQL]", "info")} Inserting listing {hilight(listing.id)} into {self.config.fb_listings_table}..."""
+            )
         try:
             client = self._get_client()
         except Exception as e:
@@ -507,7 +513,9 @@ class MySQLCompare:
             return True
         except Exception as e:
             if self.logger:
-                self.logger.warning(f"""{hilight("[MySQL]", "fail")} Insert fb_listing failed: {e}""")
+                self.logger.warning(
+                    f"""{hilight("[MySQL]", "fail")} Insert fb_listing failed: {e} (table={table}, external_id={listing.id})"""
+                )
             try:
                 client.rollback()
             except Exception:
