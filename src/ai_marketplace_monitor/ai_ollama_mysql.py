@@ -56,6 +56,7 @@ class OllamaMySQLConfig(OllamaConfig):
             year_tolerance=int(m.get("year_tolerance", 5)),
             insert_into_fb=m.get("insert_into_fb", False),
             fb_listings_table=m.get("fb_listings_table", "fb_listings"),
+            connection_timeout=int(m.get("connection_timeout", 10)),
         )
 
 
@@ -84,6 +85,12 @@ class OllamaMySQLBackend(OllamaBackend):
             or mysql_cfg.insert_into_fb
         ):
             self._mysql = MySQLCompare(mysql_cfg, logger)
+
+    def connect(self: "OllamaMySQLBackend") -> None:
+        """Ensure a request timeout is set so Ollama calls don't hang forever."""
+        if getattr(self.config, "timeout", None) is None:
+            self.config.timeout = 120
+        super().connect()
 
     def get_prompt(
         self: "OllamaMySQLBackend",
@@ -115,6 +122,10 @@ class OllamaMySQLBackend(OllamaBackend):
         item_config: TItemConfig,
         marketplace_config: TMarketplaceConfig,
     ) -> AIResponse:
+        if self.logger:
+            self.logger.info(
+                f"""{hilight("[AI]", "info")} Evaluating listing {hilight((listing.title or "")[:50])} (Ollama may take 30–120s)..."""
+            )
         response = super().evaluate(listing, item_config, marketplace_config)
         if self._mysql is None:
             return response

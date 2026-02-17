@@ -54,6 +54,9 @@ class MySQLConfig:
     insert_into_fb: bool = False
     fb_listings_table: str = "fb_listings"
 
+    # Connection timeout (seconds); avoid hanging if MySQL is unreachable
+    connection_timeout: int = 10
+
     def connection_dict(self) -> Dict[str, Any]:
         return {
             "host": self.host,
@@ -61,6 +64,7 @@ class MySQLConfig:
             "user": self.user,
             "password": self.password,
             "database": self.database,
+            "connection_timeout": self.connection_timeout,
         }
 
 
@@ -132,10 +136,15 @@ class MySQLCompare:
         """Lazy MySQL connection (requires mysql-connector-python or PyMySQL)."""
         if self._client is not None:
             return self._client
+        conn_dict = self.config.connection_dict()
+        timeout = conn_dict.pop("connection_timeout", 10)
         try:
             import mysql.connector  # type: ignore
 
-            self._client = mysql.connector.connect(**self.config.connection_dict())
+            self._client = mysql.connector.connect(
+                **conn_dict,
+                connection_timeout=timeout,
+            )
             if self.logger:
                 self.logger.debug(
                     f"""{hilight("[MySQL]", "info")} Connected to {self.config.host}:{self.config.database}"""
@@ -145,8 +154,11 @@ class MySQLCompare:
             try:
                 import pymysql  # type: ignore
 
+                conn_dict = self.config.connection_dict()
+                timeout = conn_dict.pop("connection_timeout", 10)
                 self._client = pymysql.connect(
-                    **self.config.connection_dict(),
+                    **conn_dict,
+                    connect_timeout=timeout,
                     cursorclass=pymysql.cursors.DictCursor,
                 )
                 if self.logger:
@@ -174,9 +186,15 @@ class MySQLCompare:
         loc = (listing.location or "").strip()
         zip_match = re.search(r"\b(\d{5})(?:-\d{4})?\b", loc)
         zip_code = zip_match.group(1) if zip_match else None
+        if self.logger:
+            self.logger.info(
+                f"""{hilight("[MySQL-debug]", "info")} Location: listing.location={hilight(repr(loc)[:80])} -> zip={hilight(str(zip_code))}"""
+            )
         if not zip_code:
             return (None, None, None)
         if not _safe_table(self.config.zip_county_table) or not _safe_table(self.config.counties_table):
+            if self.logger:
+                self.logger.info(f"""{hilight("[MySQL-debug]", "info")} No zip_county/counties table config, skipping county/region lookup.""")
             return (zip_code, None, None)
         try:
             cursor.execute(
@@ -185,9 +203,13 @@ class MySQLCompare:
             )
             row = cursor.fetchone()
             county_id = int(row["county_id"]) if row and isinstance(row, dict) else (int(row[0]) if row else None)
-        except Exception:
+        except Exception as e:
             county_id = None
+            if self.logger:
+                self.logger.info(f"""{hilight("[MySQL-debug]", "fail")} zip_county lookup for zip={zip_code} failed: {e}""")
         if county_id is None:
+            if self.logger:
+                self.logger.info(f"""{hilight("[MySQL-debug]", "info")} Zip {zip_code} not in {self.config.zip_county_table} or query returned no row.""")
             return (zip_code, None, None)
         try:
             cursor.execute(
@@ -196,8 +218,14 @@ class MySQLCompare:
             )
             row = cursor.fetchone()
             region_id = int(row["region_id"]) if row and isinstance(row, dict) else (int(row[0]) if row else None)
-        except Exception:
+        except Exception as e:
             region_id = None
+            if self.logger:
+                self.logger.info(f"""{hilight("[MySQL-debug]", "fail")} counties lookup for county_id={county_id} failed: {e}""")
+        if self.logger:
+            self.logger.info(
+                f"""{hilight("[MySQL-debug]", "succ")} Resolved: zip={zip_code} county_id={county_id} region_id={region_id}"""
+            )
         return (zip_code, county_id, region_id)
 
     def _fetch_sales_comps(
@@ -210,6 +238,11 @@ class MySQLCompare:
             return None
         zip_code, county_id, region_id = self._resolve_location(cursor, listing)
         beds, baths, year_built = _parse_beds_baths_year(listing)
+        if self.logger:
+            self.logger.info(
+                f"""{hilight("[MySQL-debug]", "info")} Sales comps: parsed beds={beds} baths={baths} year_built={year_built} """
+                f"""| location zip={zip_code} county_id={county_id} region_id={region_id}"""
+            )
         s_t, p_t = self.config.sales_table, self.config.properties_table
         conditions: List[str] = []
         params: List[Any] = []
@@ -234,6 +267,11 @@ class MySQLCompare:
         if region_id is not None:
             tries.append(("region", "p.region_id = %s", [region_id]))
 
+        if not tries and self.logger:
+            self.logger.info(
+                f"""{hilight("[MySQL-debug]", "fail")} Sales comps: no zip/county/region to query (listing.location may have no 5-digit zip)."""
+            )
+
         for scope, scope_where, scope_params in tries:
             q = (
                 f"SELECT s.sale_price, s.sale_date, p.beds, p.baths, p.square_feet, p.year_built, p.city, p.state, p.zip "
@@ -245,6 +283,10 @@ class MySQLCompare:
             if rows and not isinstance(rows[0], dict):
                 cols = cursor.column_names if hasattr(cursor, "column_names") else []
                 rows = [dict(zip(cols, r)) for r in rows]
+            if self.logger:
+                self.logger.info(
+                    f"""{hilight("[MySQL-debug]", "info")} Sales comps: scope={scope} (params={scope_params + params}) -> {len(rows)} rows"""
+                )
             if rows:
                 summary = f"Recent sold comps ({scope}):\n" + self._rows_to_summary(rows)
                 return ComparisonResult(summary=summary, rows=rows, raw_text="\n".join(str(r) for r in rows))
@@ -268,11 +310,13 @@ class MySQLCompare:
             return None
         if not self.config.use_sales_comps and not self.config.comparison_query and not self.config.comparison_table:
             return None
+        if self.logger:
+            self.logger.info(f"""{hilight("[MySQL]", "info")} Fetching comparison for listing {hilight((listing.title or "")[:50])}...""")
         try:
             client = self._get_client()
         except Exception as e:
             if self.logger:
-                self.logger.warning(f"""{hilight("[MySQL]", "fail")} Connection failed: {e}""")
+                self.logger.warning(f"""{hilight("[MySQL]", "fail")} Connection failed (check host/user/database): {e}""")
             return None
 
         cursor = client.cursor(dictionary=True) if hasattr(client, "cursor") else client.cursor()
@@ -307,6 +351,8 @@ class MySQLCompare:
 
         if not combined_parts:
             return None
+        if self.logger:
+            self.logger.info(f"""{hilight("[MySQL]", "succ")} Comparison done for listing.""")
         return ComparisonResult(
             summary="\n\n".join(combined_parts),
             rows=[],
@@ -356,6 +402,11 @@ class MySQLCompare:
             price_col = "price"
         price_val = _parse_price(listing.price)
         title_like = f"%{(listing.title or '')[:30]}%"
+        if self.logger:
+            self.logger.info(
+                f"""{hilight("[MySQL-debug]", "info")} FB comparison: table={table} title_col={title_col} price_col={price_col} """
+                f"""| title_like={hilight(repr(title_like)[:60])} price_val={price_val}"""
+            )
         if price_col and price_val is not None:
             cursor.execute(
                 f'SELECT * FROM `{table}` WHERE `{title_col}` LIKE %s AND `{price_col}` <= %s ORDER BY `{price_col}` DESC LIMIT %s',
@@ -370,6 +421,10 @@ class MySQLCompare:
         if rows and not isinstance(rows[0], dict):
             cols = cursor.column_names if hasattr(cursor, "column_names") else []
             rows = [dict(zip(cols, r)) for r in rows]
+        if self.logger:
+            self.logger.info(
+                f"""{hilight("[MySQL-debug]", "info")} FB comparison: table {table} -> {len(rows)} rows"""
+            )
         summary = self._rows_to_summary(rows)
         raw = "\n".join(str(r) for r in rows)
         return ComparisonResult(summary=summary, rows=rows, raw_text=raw)
