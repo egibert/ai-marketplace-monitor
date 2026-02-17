@@ -43,8 +43,19 @@ class OllamaMySQLConfig(OllamaConfig):
             enabled=m.get("enabled", True),
             comparison_query=m.get("comparison_query"),
             comparison_table=m.get("comparison_table"),
+            title_column=m.get("title_column", "title"),
+            price_column=m.get("price_column") if "price_column" in m else "price",
             max_rows=int(m.get("max_rows", 10)),
             output_format=m.get("output_format", "full"),
+            use_sales_comps=m.get("use_sales_comps", False),
+            sales_max_rows=int(m.get("sales_max_rows", 10)),
+            sales_table=m.get("sales_table", "sales"),
+            properties_table=m.get("properties_table", "properties"),
+            zip_county_table=m.get("zip_county_table", "zip_county"),
+            counties_table=m.get("counties_table", "counties"),
+            year_tolerance=int(m.get("year_tolerance", 5)),
+            insert_into_fb=m.get("insert_into_fb", False),
+            fb_listings_table=m.get("fb_listings_table", "fb_listings"),
         )
 
 
@@ -66,7 +77,12 @@ class OllamaMySQLBackend(OllamaBackend):
         super().__init__(config, logger)
         self._mysql: Optional[MySQLCompare] = None
         mysql_cfg = config.get_mysql_config() if hasattr(config, "get_mysql_config") else None
-        if mysql_cfg and mysql_cfg.enabled and (mysql_cfg.comparison_query or mysql_cfg.comparison_table):
+        if mysql_cfg and mysql_cfg.enabled and (
+            mysql_cfg.use_sales_comps
+            or mysql_cfg.comparison_query
+            or mysql_cfg.comparison_table
+            or mysql_cfg.insert_into_fb
+        ):
             self._mysql = MySQLCompare(mysql_cfg, logger)
 
     def get_prompt(
@@ -78,11 +94,19 @@ class OllamaMySQLBackend(OllamaBackend):
         prompt = super().get_prompt(listing, item_config, marketplace_config)
         if self._mysql is None:
             return prompt
+        mysql_cfg = getattr(self.config, "get_mysql_config", lambda: None)() if hasattr(self.config, "get_mysql_config") else None
         comparison = self._mysql.fetch_comparison(listing, item_name=item_config.name)
         if comparison and comparison.summary:
             prompt += "\n\n--- Comparison data from your database (use this to compare prices/conditions): ---\n"
             prompt += comparison.summary
             prompt += "\n--- End of comparison data ---\n"
+            if mysql_cfg and (mysql_cfg.use_sales_comps or mysql_cfg.comparison_table):
+                prompt += (
+                    "\nIn your brief recommendation (after 'Rating <1-5>:'), state clearly: "
+                    "(1) Versus Zillow sold comps: is this a good deal, fair, or overpriced? One short sentence. "
+                    "(2) Versus other Facebook listings: good deal, fair, or overpriced? One short sentence. "
+                    "Keep the total summary under 60 words."
+                )
         return prompt
 
     def evaluate(
@@ -95,19 +119,32 @@ class OllamaMySQLBackend(OllamaBackend):
         if self._mysql is None:
             return response
         comparison = self._mysql.fetch_comparison(listing, item_name=item_config.name)
-        if comparison and comparison.summary and response.comment != AIResponse.NOT_EVALUATED:
-            mysql_cfg = getattr(self.config, "get_mysql_config", lambda: None)() if hasattr(self.config, "get_mysql_config") else None
-            out_fmt = (mysql_cfg and getattr(mysql_cfg, "output_format", None)) or "full"
-            if out_fmt != "none":
-                db_text = comparison.summary.replace("\n", " ").strip()
-                if out_fmt == "short":
-                    db_text = db_text[:120] + ("..." if len(db_text) > 120 else "")
-                response = AIResponse(
-                    name=response.name,
-                    score=response.score,
-                    comment=response.comment + " | DB: " + db_text,
-                )
+        if response.comment != AIResponse.NOT_EVALUATED:
+            comment = response.comment
+            if comparison and comparison.summary:
+                mysql_cfg = getattr(self.config, "get_mysql_config", lambda: None)() if hasattr(self.config, "get_mysql_config") else None
+                out_fmt = (mysql_cfg and getattr(mysql_cfg, "output_format", None)) or "full"
+                if out_fmt != "none":
+                    db_text = comparison.summary.replace("\n", " ").strip()
+                    if out_fmt == "short":
+                        db_text = db_text[:120] + ("..." if len(db_text) > 120 else "")
+                    comment = comment + " | DB: " + db_text
+            if listing.post_url:
+                comment = comment + "\nListing URL: " + listing.post_url
+            if comment != response.comment:
+                response = AIResponse(name=response.name, score=response.score, comment=comment)
         return response
+
+    def on_listing_accepted(
+        self: "OllamaMySQLBackend",
+        listing: Listing,
+        item_config: Any,
+        marketplace_config: Any,
+    ) -> None:
+        """Called by the monitor when a listing passes the rating threshold. Inserts into fb_listings if configured."""
+        if self._mysql is None:
+            return
+        self._mysql.insert_fb_listing(listing)
 
     def __del__(self: "OllamaMySQLBackend") -> None:
         if getattr(self, "_mysql", None) is not None:

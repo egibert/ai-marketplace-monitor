@@ -237,6 +237,17 @@ class MarketplaceMonitor:
                 User(self.config.user[user], logger=self.logger).notify(
                     new_listings, listing_ratings, item_config
                 )
+            for listing in new_listings:
+                for agent in self.ai_agents:
+                    on_accepted = getattr(agent, "on_listing_accepted", None)
+                    if callable(on_accepted):
+                        try:
+                            on_accepted(listing, item_config, marketplace_config)
+                        except Exception as e:
+                            if self.logger:
+                                self.logger.warning(
+                                    f"""{hilight("[AI]", "fail")} on_listing_accepted failed for {agent.config.name}: {e}"""
+                                )
         time.sleep(5)
 
     def _select_translator(
