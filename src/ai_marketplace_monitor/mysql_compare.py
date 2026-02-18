@@ -351,8 +351,8 @@ class MySQLCompare:
                 )
                 row = cursor.fetchone()
                 region_id = int(row["region_id"]) if row and isinstance(row, dict) else (int(row[0]) if row else None)
-        except Exception:
-            pass
+            except Exception:
+                pass
         return (zip_code, county_id, region_id)
 
     def _fetch_sales_comps(
