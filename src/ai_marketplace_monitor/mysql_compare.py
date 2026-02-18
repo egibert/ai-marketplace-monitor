@@ -404,6 +404,23 @@ class MySQLCompare:
                 summary = f"Recent sold comps ({scope}):\n" + self._rows_to_summary(rows)
                 return ComparisonResult(summary=summary, rows=rows, raw_text="\n".join(str(r) for r in rows), sales_scope=scope)
 
+        # Fallback: same zip/county/region but without beds/baths/year filter (area comps)
+        if where_extra:
+            for scope, scope_where, scope_params in tries:
+                q = (
+                    f"SELECT s.sale_price, s.sale_date, p.beds, p.baths, p.square_feet, p.year_built, p.city, p.state, p.zip "
+                    f"FROM `{s_t}` s JOIN `{p_t}` p ON s.property_id = p.id "
+                    f"WHERE {scope_where} ORDER BY s.sale_date DESC LIMIT %s"
+                )
+                cursor.execute(q, scope_params + [limit])
+                rows = cursor.fetchall()
+                if rows and not isinstance(rows[0], dict):
+                    cols = cursor.column_names if hasattr(cursor, "column_names") else []
+                    rows = [dict(zip(cols, r)) for r in rows]
+                if rows:
+                    summary = f"Recent sold comps ({scope}, area):\n" + self._rows_to_summary(rows)
+                    return ComparisonResult(summary=summary, rows=rows, raw_text="\n".join(str(r) for r in rows), sales_scope=scope)
+
         return ComparisonResult(
             summary="No recent sales comps found for this location (zip → county → region).",
             rows=[],
@@ -675,31 +692,47 @@ class MySQLCompare:
             county_id,
             region_id,
         )
+        update_with_updated_at = (
+            "title = VALUES(title), description = VALUES(description), "
+            "asking_price = VALUES(asking_price), city = VALUES(city), state = VALUES(state), "
+            "zip = VALUES(zip), url = VALUES(url), beds = VALUES(beds), baths = VALUES(baths), "
+            "county_id = VALUES(county_id), region_id = VALUES(region_id), updated_at = NOW()"
+        )
+        update_without_updated_at = (
+            "title = VALUES(title), description = VALUES(description), "
+            "asking_price = VALUES(asking_price), city = VALUES(city), state = VALUES(state), "
+            "zip = VALUES(zip), url = VALUES(url), beds = VALUES(beds), baths = VALUES(baths), "
+            "county_id = VALUES(county_id), region_id = VALUES(region_id)"
+        )
+        insert_with_posted = (
+            f"""INSERT INTO `{table}` (external_id, title, description, asking_price, city, state, zip, url, beds, baths, county_id, region_id, posted_date)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                ON DUPLICATE KEY UPDATE """
+        )
+        insert_without_posted = (
+            f"""INSERT INTO `{table}` (external_id, title, description, asking_price, city, state, zip, url, beds, baths, county_id, region_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE """
+        )
         try:
-            try:
-                cursor.execute(
-                    f"""INSERT INTO `{table}` (external_id, title, description, asking_price, city, state, zip, url, beds, baths, county_id, region_id, posted_date)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                        ON DUPLICATE KEY UPDATE title = VALUES(title), description = VALUES(description),
-                        asking_price = VALUES(asking_price), city = VALUES(city), state = VALUES(state),
-                        zip = VALUES(zip), url = VALUES(url), beds = VALUES(beds), baths = VALUES(baths),
-                        county_id = VALUES(county_id), region_id = VALUES(region_id), updated_at = NOW()""",
-                    values,
-                )
-            except Exception as col_err:
-                err_msg = str(col_err).lower()
-                if "posted_date" in err_msg or "unknown column" in err_msg:
-                    cursor.execute(
-                        f"""INSERT INTO `{table}` (external_id, title, description, asking_price, city, state, zip, url, beds, baths, county_id, region_id)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            ON DUPLICATE KEY UPDATE title = VALUES(title), description = VALUES(description),
-                            asking_price = VALUES(asking_price), city = VALUES(city), state = VALUES(state),
-                            zip = VALUES(zip), url = VALUES(url), beds = VALUES(beds), baths = VALUES(baths),
-                            county_id = VALUES(county_id), region_id = VALUES(region_id), updated_at = NOW()""",
-                        values,
-                    )
-                else:
-                    raise
+            last_err = None
+            for insert_sql in [
+                insert_with_posted + update_with_updated_at,
+                insert_with_posted + update_without_updated_at,
+                insert_without_posted + update_with_updated_at,
+                insert_without_posted + update_without_updated_at,
+            ]:
+                try:
+                    cursor.execute(insert_sql, values)
+                    break
+                except Exception as e:
+                    last_err = e
+                    err_msg = str(e).lower()
+                    if "unknown column" not in err_msg and "posted_date" not in err_msg and "updated_at" not in err_msg:
+                        raise
+                    continue
+            else:
+                raise last_err
             client.commit()
             if self.logger:
                 self.logger.info(f"""{hilight("[MySQL]", "succ")} Inserted/updated fb_listing {listing.id}.""")
