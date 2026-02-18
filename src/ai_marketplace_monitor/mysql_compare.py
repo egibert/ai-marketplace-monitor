@@ -298,6 +298,14 @@ class MySQLCompare:
             pass
         return None
 
+    def _drain_cursor(self, cursor: Any) -> None:
+        """Consume any remaining rows so the cursor is clean for the next execute (avoids 'Unread result' errors)."""
+        try:
+            while cursor.fetchone():
+                pass
+        except Exception:
+            pass
+
     def _resolve_location(self, cursor: Any, listing: Listing) -> Tuple[Optional[str], Optional[int], Optional[int]]:
         """Resolve listing.location to (zip, county_id, region_id). When no zip in string: try geocode (Nominatim) first, then city+state -> zip from properties as fallback."""
         loc = (listing.location or "").strip()
@@ -313,14 +321,17 @@ class MySQLCompare:
             return (None, None, None)
         if not _safe_table(self.config.zip_county_table) or not _safe_table(self.config.counties_table):
             return (zip_code, None, None)
+        county_id: Optional[int] = None
         try:
             cursor.execute(
                 f"SELECT county_id FROM `{self.config.zip_county_table}` WHERE zip = %s LIMIT 1",
                 (zip_code,),
             )
             row = cursor.fetchone()
+            self._drain_cursor(cursor)
             county_id = int(row["county_id"]) if row and isinstance(row, dict) else (int(row[0]) if row else None)
         except Exception:
+            self._drain_cursor(cursor)
             county_id = None
         if county_id is None and _safe_table(self.config.properties_table):
             try:
@@ -329,19 +340,23 @@ class MySQLCompare:
                     (zip_code,),
                 )
                 row = cursor.fetchone()
+                self._drain_cursor(cursor)
                 county_id = int(row["county_id"]) if row and isinstance(row, dict) else (int(row[0]) if row else None)
             except Exception:
-                pass
+                self._drain_cursor(cursor)
         if county_id is None:
             return (zip_code, None, None)
+        region_id: Optional[int] = None
         try:
             cursor.execute(
                 f"SELECT region_id FROM `{self.config.counties_table}` WHERE id = %s LIMIT 1",
                 (county_id,),
             )
             row = cursor.fetchone()
+            self._drain_cursor(cursor)
             region_id = int(row["region_id"]) if row and isinstance(row, dict) else (int(row[0]) if row else None)
         except Exception:
+            self._drain_cursor(cursor)
             region_id = None
         if region_id is None and _safe_table(self.config.properties_table):
             try:
@@ -350,9 +365,10 @@ class MySQLCompare:
                     (county_id,),
                 )
                 row = cursor.fetchone()
+                self._drain_cursor(cursor)
                 region_id = int(row["region_id"]) if row and isinstance(row, dict) else (int(row[0]) if row else None)
             except Exception:
-                pass
+                self._drain_cursor(cursor)
         return (zip_code, county_id, region_id)
 
     def _fetch_sales_comps(
@@ -390,13 +406,17 @@ class MySQLCompare:
             tries.append(("region", "p.region_id = %s", [region_id]))
 
         for scope, scope_where, scope_params in tries:
-            q = (
-                f"SELECT s.sale_price, s.sale_date, p.beds, p.baths, p.square_feet, p.year_built, p.city, p.state, p.zip "
-                f"FROM `{s_t}` s JOIN `{p_t}` p ON s.property_id = p.id "
-                f"WHERE {scope_where}{where_extra} ORDER BY s.sale_date DESC LIMIT %s"
-            )
-            cursor.execute(q, scope_params + params + [limit])
-            rows = cursor.fetchall()
+            try:
+                q = (
+                    f"SELECT s.sale_price, s.sale_date, p.beds, p.baths, p.square_feet, p.year_built, p.city, p.state, p.zip "
+                    f"FROM `{s_t}` s JOIN `{p_t}` p ON s.property_id = p.id "
+                    f"WHERE {scope_where}{where_extra} ORDER BY s.sale_date DESC LIMIT %s"
+                )
+                cursor.execute(q, scope_params + params + [limit])
+                rows = cursor.fetchall()
+            except Exception:
+                self._drain_cursor(cursor)
+                continue
             if rows and not isinstance(rows[0], dict):
                 cols = cursor.column_names if hasattr(cursor, "column_names") else []
                 rows = [dict(zip(cols, r)) for r in rows]
@@ -407,13 +427,17 @@ class MySQLCompare:
         # Fallback: same zip/county/region but without beds/baths/year filter (area comps)
         if where_extra:
             for scope, scope_where, scope_params in tries:
-                q = (
-                    f"SELECT s.sale_price, s.sale_date, p.beds, p.baths, p.square_feet, p.year_built, p.city, p.state, p.zip "
-                    f"FROM `{s_t}` s JOIN `{p_t}` p ON s.property_id = p.id "
-                    f"WHERE {scope_where} ORDER BY s.sale_date DESC LIMIT %s"
-                )
-                cursor.execute(q, scope_params + [limit])
-                rows = cursor.fetchall()
+                try:
+                    q = (
+                        f"SELECT s.sale_price, s.sale_date, p.beds, p.baths, p.square_feet, p.year_built, p.city, p.state, p.zip "
+                        f"FROM `{s_t}` s JOIN `{p_t}` p ON s.property_id = p.id "
+                        f"WHERE {scope_where} ORDER BY s.sale_date DESC LIMIT %s"
+                    )
+                    cursor.execute(q, scope_params + [limit])
+                    rows = cursor.fetchall()
+                except Exception:
+                    self._drain_cursor(cursor)
+                    continue
                 if rows and not isinstance(rows[0], dict):
                     cols = cursor.column_names if hasattr(cursor, "column_names") else []
                     rows = [dict(zip(cols, r)) for r in rows]
