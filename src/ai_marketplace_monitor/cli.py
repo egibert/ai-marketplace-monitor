@@ -51,7 +51,8 @@ def main(
             "--clear-cache",
             help=(
                 "Remove all or selected category of cached items and treat all queries as new. "
-                f"""Allowed cache types are {", ".join([x.value for x in CacheType])} and all """
+                "Use 'all' to clear everything (listings, AI, notifications, geocode). "
+                f"Or one of: {', '.join([x.value for x in CacheType])}, geocode_zip."
             ),
         ),
     ] = None,
@@ -115,13 +116,14 @@ def main(
     )
 
     if clear_cache is not None:
+        allowed = [x.value for x in CacheType] + ["geocode_zip"]
         if clear_cache == "all":
             cache.clear()
-        elif clear_cache in [x.value for x in CacheType]:
+        elif clear_cache in allowed:
             cache.evict(tag=clear_cache)
         else:
             logger.error(
-                f"""{hilight("[Clear Cache]", "fail")} {clear_cache} is not a valid cache type. Allowed cache types are {", ".join([x.value for x in CacheType])} and all """
+                f"""{hilight("[Clear Cache]", "fail")} {clear_cache} is not valid. Allowed: {", ".join(allowed)} and all"""
             )
             sys.exit(1)
         logger.info(f"""{hilight("[Clear Cache]", "succ")} Cache cleared.""")

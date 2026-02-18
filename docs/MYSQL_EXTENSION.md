@@ -166,6 +166,24 @@ Parsed from **title** and **description** (e.g. “3 bed”, “2 bath”, “bu
 
 ---
 
+## Clearing the cache
+
+The app caches geocode results (city/state → zip), listing details, AI inquiries, and notification state under `~/.ai-marketplace-monitor`. To force everything to be re-read (fresh geocode, fresh listings, re-evaluate with AI, re-notify):
+
+```bash
+aimm --clear-cache all
+```
+
+To clear only geocode (so city/state → zip is looked up again via Nominatim):
+
+```bash
+aimm --clear-cache geocode_zip
+```
+
+Other options: `listing-details`, `ai-inquiries`, `user-notifications`, `counters`. Run with `--clear-cache <type>` then exit (e.g. `aimm --clear-cache all`). If `aimm` is not on your PATH, use `python -m ai_marketplace_monitor.cli --clear-cache all` from the project root.
+
+---
+
 ## Ignoring listings outside a state (e.g. PA only)
 
 Use **seller_locations** on the item (or marketplace) so only listings whose location contains one of the strings are kept. To only consider Pennsylvania listings:
