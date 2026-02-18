@@ -54,8 +54,8 @@ class MySQLConfig:
     # --- Insert accepted listings into fb_listings
     insert_into_fb: bool = True
     fb_listings_table: str = "fb_listings"
-    # When true, insert every evaluated listing (not only accepted). Use to populate fb_listings.
-    insert_all_evaluated: bool = False
+    # When true (default), insert every evaluated listing into fb_listings. Set false to insert only when listing passes threshold.
+    insert_all_evaluated: bool = True
     # Optional: also insert a row into this table for price history (e.g. fb_listing_history). Columns: external_id, asking_price, recorded_at.
     fb_listing_history_table: Optional[str] = None
 
@@ -676,20 +676,19 @@ class MySQLCompare:
             region_id,
         )
         try:
-            cursor.execute(
-                f"""INSERT INTO `{table}` (external_id, title, description, asking_price, city, state, zip, url, beds, baths, county_id, region_id, posted_date)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                    ON DUPLICATE KEY UPDATE title = VALUES(title), description = VALUES(description),
-                    asking_price = VALUES(asking_price), city = VALUES(city), state = VALUES(state),
-                    zip = VALUES(zip), url = VALUES(url), beds = VALUES(beds), baths = VALUES(baths),
-                    county_id = VALUES(county_id), region_id = VALUES(region_id), updated_at = NOW()""",
-                values,
-            )
-            client.commit()
-        except Exception as col_err:
-            err_msg = str(col_err).lower()
-            if "posted_date" in err_msg or "unknown column" in err_msg:
-                try:
+            try:
+                cursor.execute(
+                    f"""INSERT INTO `{table}` (external_id, title, description, asking_price, city, state, zip, url, beds, baths, county_id, region_id, posted_date)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                        ON DUPLICATE KEY UPDATE title = VALUES(title), description = VALUES(description),
+                        asking_price = VALUES(asking_price), city = VALUES(city), state = VALUES(state),
+                        zip = VALUES(zip), url = VALUES(url), beds = VALUES(beds), baths = VALUES(baths),
+                        county_id = VALUES(county_id), region_id = VALUES(region_id), updated_at = NOW()""",
+                    values,
+                )
+            except Exception as col_err:
+                err_msg = str(col_err).lower()
+                if "posted_date" in err_msg or "unknown column" in err_msg:
                     cursor.execute(
                         f"""INSERT INTO `{table}` (external_id, title, description, asking_price, city, state, zip, url, beds, baths, county_id, region_id)
                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
@@ -699,14 +698,11 @@ class MySQLCompare:
                             county_id = VALUES(county_id), region_id = VALUES(region_id), updated_at = NOW()""",
                         values,
                     )
-                    client.commit()
-                except Exception:
-                    raise col_err
-            else:
-                raise
+                else:
+                    raise
+            client.commit()
             if self.logger:
                 self.logger.info(f"""{hilight("[MySQL]", "succ")} Inserted/updated fb_listing {listing.id}.""")
-            # Optional: insert into fb_listing_history for price history
             history_table = getattr(self.config, "fb_listing_history_table", None)
             if history_table and _safe_table(history_table) and asking_price is not None:
                 try:

@@ -57,7 +57,7 @@ class OllamaMySQLConfig(OllamaConfig):
             year_tolerance=int(m.get("year_tolerance", 5)),
             insert_into_fb=m.get("insert_into_fb", True),
             fb_listings_table=m.get("fb_listings_table", "fb_listings"),
-            insert_all_evaluated=m.get("insert_all_evaluated", False),
+            insert_all_evaluated=m.get("insert_all_evaluated", True),
             fb_listing_history_table=m.get("fb_listing_history_table"),
             connection_timeout=int(m.get("connection_timeout", 10)),
             geocode_fallback=m.get("geocode_fallback", True),
