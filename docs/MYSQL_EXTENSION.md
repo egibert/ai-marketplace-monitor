@@ -145,14 +145,24 @@ Parsed from **title** and **description** (e.g. “3 bed”, “2 bath”, “bu
 | **year_tolerance**    | ± years for year_built filter (default 5). |
 | **comparison_table**  | Table for FB comparison (e.g. fb_listings). |
 | **title_column**, **price_column** | Columns for FB comparison (e.g. title, asking_price). |
-| **insert_into_fb**    | Insert listings into fb_listings (default false). |
+| **insert_into_fb**    | Insert listings into fb_listings (default true). Set false to disable. |
 | **insert_all_evaluated** | When true, insert every evaluated listing (not only accepted). Use to populate fb_listings (default false). |
 | **fb_listings_table** | Table name for insert (default fb_listings). |
+| **fb_listing_history_table** | Optional. When set (e.g. fb_listing_history), a row is inserted here for price history (external_id, asking_price, recorded_at). |
 | **comparison_query**  | Custom SQL (placeholders {title}, {price}, {location}, {item_name}). Overrides built-in comparison when set. |
 | **max_rows**          | Max rows for FB comparison (default 10). |
 | **output_format**     | DB context in notifications: "full", "short", or "none". |
 | **geocode_fallback**  | When true (default), resolve city/state → zip via Nominatim first; DB is fallback. Set false to use only DB. |
 | **geocode_rate_limit_seconds** | Seconds to wait after each Nominatim call (default 1.0). |
+| **lot_rent_table**    | Optional. Table for average lot rent lookup (e.g. lot_rents). When set and lot rent is not in the listing description, a line like "Average lot rent (zip 16428): $400" is appended. Lookup order: zip → county → region. |
+| **lot_rent_zip_column**, **lot_rent_county_column**, **lot_rent_region_column**, **lot_rent_value_column** | Column names for lot rent table (defaults: zip, county_id, region_id, avg_rent). |
+
+---
+
+## Concise output: scope and lot rent
+
+- **Zillow scope:** The concise line shows which geographic level was used for the Zillow average: "(computed using zip)", "(computed using county)", or "(computed using region)". When there aren’t enough comps at zip level, county or region is used.
+- **Average lot rent:** If **lot_rent_table** is set and the listing title/description does **not** mention lot rent (or space rent) with a dollar amount, the code looks up the average lot rent by zip → county → region and appends a line like "Average lot rent (zip 16428): $400". If the listing already states lot rent, nothing is appended.
 
 ---
 

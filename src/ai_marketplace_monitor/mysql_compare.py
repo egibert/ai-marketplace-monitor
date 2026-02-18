@@ -52,10 +52,12 @@ class MySQLConfig:
     year_tolerance: int = 5
 
     # --- Insert accepted listings into fb_listings
-    insert_into_fb: bool = False
+    insert_into_fb: bool = True
     fb_listings_table: str = "fb_listings"
     # When true, insert every evaluated listing (not only accepted). Use to populate fb_listings.
     insert_all_evaluated: bool = False
+    # Optional: also insert a row into this table for price history (e.g. fb_listing_history). Columns: external_id, asking_price, recorded_at.
+    fb_listing_history_table: Optional[str] = None
 
     # Connection timeout (seconds); avoid hanging if MySQL is unreachable
     connection_timeout: int = 10
@@ -64,6 +66,13 @@ class MySQLConfig:
     geocode_fallback: bool = True
     # Nominatim asks for 1 req/sec; we sleep this many seconds after each API call
     geocode_rate_limit_seconds: float = 1.0
+
+    # --- Average lot rent (when not in listing description): query by zip → county → region
+    lot_rent_table: Optional[str] = None  # e.g. lot_rents
+    lot_rent_zip_column: str = "zip"
+    lot_rent_county_column: str = "county_id"
+    lot_rent_region_column: str = "region_id"
+    lot_rent_value_column: str = "avg_rent"  # or "rent"
 
     def connection_dict(self) -> Dict[str, Any]:
         return {
@@ -83,6 +92,12 @@ class ComparisonResult:
     summary: str  # Human-readable summary for the AI prompt
     rows: List[Dict[str, Any]] = field(default_factory=list)
     raw_text: str = ""  # Optional raw dump for custom output
+    # One-line price comparison: "Vs Zillow: X% below average (computed using zip). Vs Facebook: ..." (or "no comps"/"no data")
+    concise_price_line: str = ""
+    # Which geographic scope was used for Zillow comps: "zip", "county", or "region"
+    sales_scope: Optional[str] = None
+    # When lot rent not in listing: "Average lot rent (zip 16428): $400" or ""
+    average_lot_rent_line: str = ""
 
 
 def _parse_price(price_str: str) -> Optional[float]:
@@ -132,6 +147,19 @@ def _parse_beds_baths_year(listing: Listing) -> Tuple[Optional[int], Optional[fl
 
 def _safe_table(name: str) -> bool:
     return bool(name and re.match(r"^[a-zA-Z0-9_]+$", name))
+
+
+def _lot_rent_in_listing(listing: Listing) -> bool:
+    """True if listing title or description mentions lot rent / space rent with a dollar amount."""
+    text = f"{listing.title or ''} {listing.description or ''}".lower()
+    if not re.search(r"lot\s+rent|space\s+rent|lot\s+:\s*\$|space\s+:\s*\$", text):
+        return False
+    # Has a dollar amount near rent (e.g. "lot rent $400", "rent: 350", "space rent 500/mo")
+    if re.search(r"(?:lot\s+rent|space\s+rent|rent)\s*[:\s]*\$?\s*[\d,]+", text):
+        return True
+    if re.search(r"\$[\d,]+(?:\s*/\s*mo|\s*per\s*month)?(?:\s+lot|\s+space|\s+rent)", text):
+        return True
+    return False
 
 
 class MySQLCompare:
@@ -399,7 +427,7 @@ class MySQLCompare:
                 )
             if rows:
                 summary = f"Recent sold comps ({scope}):\n" + self._rows_to_summary(rows)
-                return ComparisonResult(summary=summary, rows=rows, raw_text="\n".join(str(r) for r in rows))
+                return ComparisonResult(summary=summary, rows=rows, raw_text="\n".join(str(r) for r in rows), sales_scope=scope)
 
         return ComparisonResult(
             summary="No recent sales comps found for this location (zip → county → region).",
@@ -431,6 +459,9 @@ class MySQLCompare:
 
         cursor = client.cursor(dictionary=True) if hasattr(client, "cursor") else client.cursor()
         combined_parts: List[str] = []
+        sales_res: Optional[ComparisonResult] = None
+        fb_res: Optional[ComparisonResult] = None
+        average_lot_rent_line: str = ""
 
         try:
             if self.config.comparison_query:
@@ -446,9 +477,12 @@ class MySQLCompare:
                     if fb_res and fb_res.summary:
                         combined_parts.append(fb_res.summary)
             elif self.config.comparison_table:
-                res = self._run_builtin_comparison(cursor, listing, item_name)
-                if res:
-                    combined_parts.append(res.summary)
+                fb_res = self._run_builtin_comparison(cursor, listing, item_name)
+                if fb_res:
+                    combined_parts.append(fb_res.summary)
+            if getattr(self.config, "lot_rent_table", None) and _safe_table(getattr(self.config, "lot_rent_table", "")):
+                if not _lot_rent_in_listing(listing):
+                    average_lot_rent_line = self._get_average_lot_rent(cursor, listing)
         except Exception as e:
             if self.logger:
                 self.logger.warning(f"""{hilight("[MySQL]", "fail")} Query failed: {e}""")
@@ -463,10 +497,42 @@ class MySQLCompare:
             return None
         if self.logger:
             self.logger.info(f"""{hilight("[MySQL]", "succ")} Comparison done for listing.""")
+
+        # Build one-line price comparison: Vs Zillow: X% above/below average. Vs Facebook: Y% above/below average.
+        listing_price = _parse_price(listing.price)
+        concise_parts: List[str] = []
+        sales_scope: Optional[str] = getattr(sales_res, "sales_scope", None) if sales_res else None
+        if sales_res and sales_res.rows and listing_price is not None:
+            prices = [float(r["sale_price"]) for r in sales_res.rows if r.get("sale_price") is not None]
+            if prices:
+                avg_z = sum(prices) / len(prices)
+                pct = ((listing_price - avg_z) / avg_z) * 100
+                scope_txt = f" (computed using {sales_scope})" if sales_scope else ""
+                concise_parts.append(f"Vs Zillow: {abs(pct):.0f}% {'below' if pct < 0 else 'above'} average when compared to recently sold Zillow listings{scope_txt}.")
+            else:
+                concise_parts.append("Vs Zillow: no comps.")
+        elif self.config.use_sales_comps:
+            concise_parts.append("Vs Zillow: no comps.")
+        if fb_res and fb_res.rows and listing_price is not None:
+            price_col = self.config.price_column or "asking_price"
+            prices = [float(r[price_col]) for r in fb_res.rows if r.get(price_col) is not None]
+            if prices:
+                avg_f = sum(prices) / len(prices)
+                pct = ((listing_price - avg_f) / avg_f) * 100
+                concise_parts.append(f"Vs Facebook: {abs(pct):.0f}% {'below' if pct < 0 else 'above'} average when compared to similar Facebook Marketplace listings.")
+            else:
+                concise_parts.append("Vs Facebook: no data.")
+        elif self.config.comparison_table:
+            concise_parts.append("Vs Facebook: no data.")
+        concise_price_line = " ".join(concise_parts) if concise_parts else ""
+
         return ComparisonResult(
             summary="\n\n".join(combined_parts),
             rows=[],
             raw_text="",
+            concise_price_line=concise_price_line,
+            sales_scope=sales_scope,
+            average_lot_rent_line=average_lot_rent_line,
         )
 
     def _run_custom_query(
@@ -562,9 +628,51 @@ class MySQLCompare:
             city = parts[0]
         return (city, state, zip_code)
 
+    def _get_average_lot_rent(self, cursor: Any, listing: Listing) -> str:
+        """Look up average lot rent by zip → county → region. Return e.g. 'Average lot rent (zip 16428): $400' or ''."""
+        table = getattr(self.config, "lot_rent_table", None)
+        if not table or not _safe_table(table):
+            return ""
+        zip_code, county_id, region_id = self._resolve_location(cursor, listing)
+        val_col = getattr(self.config, "lot_rent_value_column", "avg_rent") or "avg_rent"
+        if not _safe_table(val_col):
+            val_col = "avg_rent"
+        for scope, col, key in [
+            ("zip", getattr(self.config, "lot_rent_zip_column", "zip"), zip_code),
+            ("county", getattr(self.config, "lot_rent_county_column", "county_id"), county_id),
+            ("region", getattr(self.config, "lot_rent_region_column", "region_id"), region_id),
+        ]:
+            if not col or not _safe_table(col) or key is None:
+                continue
+            try:
+                cursor.execute(
+                    f"SELECT `{val_col}` FROM `{table}` WHERE `{col}` = %s LIMIT 1",
+                    (key,),
+                )
+                row = cursor.fetchone()
+                if row:
+                    val = row.get(val_col, row[0]) if isinstance(row, dict) else row[0]
+                    if val is not None:
+                        try:
+                            num = float(val)
+                            label = f"{scope} {key}" if scope != "zip" else f"zip {key}"
+                            return f"Average lot rent ({label}): ${num:,.0f}"
+                        except (TypeError, ValueError):
+                            pass
+            except Exception as e:
+                if self.logger:
+                    self.logger.debug(f"""{hilight("[MySQL-debug]", "fail")} Lot rent lookup ({scope}): {e}""")
+        return ""
+
     def insert_fb_listing(self, listing: Listing) -> bool:
-        """Insert listing into fb_listings (external_id, title, description, asking_price, url, beds, baths, county_id, region_id when available)."""
-        if not self.config.enabled or not self.config.insert_into_fb or not _safe_table(self.config.fb_listings_table):
+        """Insert listing into fb_listings (external_id, title, description, asking_price, url, beds, baths, county_id, region_id when available). Optionally insert into fb_listing_history for price history."""
+        if not self.config.enabled or not _safe_table(self.config.fb_listings_table):
+            return False
+        if not self.config.insert_into_fb:
+            if self.logger:
+                self.logger.debug(
+                    f"""{hilight("[MySQL]", "info")} Insert skipped (insert_into_fb=false). Set insert_into_fb = true in [ai.xxx.mysql] to insert into {self.config.fb_listings_table}."""
+                )
             return False
         if self.logger:
             self.logger.info(
@@ -592,32 +700,69 @@ class MySQLCompare:
         except Exception:
             pass
 
+        values = (
+            listing.id,
+            (listing.title or "")[:500],
+            (listing.description or "")[:10000],
+            asking_price,
+            (city or "")[:200] or None,
+            (state or "")[:10] or None,
+            (zip_code or "")[:10] or None,
+            (listing.post_url or "")[:2000] or None,
+            beds,
+            baths,
+            county_id,
+            region_id,
+        )
         try:
             cursor.execute(
-                f"""INSERT INTO `{table}` (external_id, title, description, asking_price, city, state, zip, url, beds, baths, county_id, region_id)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                f"""INSERT INTO `{table}` (external_id, title, description, asking_price, city, state, zip, url, beds, baths, county_id, region_id, posted_date)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                     ON DUPLICATE KEY UPDATE title = VALUES(title), description = VALUES(description),
                     asking_price = VALUES(asking_price), city = VALUES(city), state = VALUES(state),
                     zip = VALUES(zip), url = VALUES(url), beds = VALUES(beds), baths = VALUES(baths),
                     county_id = VALUES(county_id), region_id = VALUES(region_id), updated_at = NOW()""",
-                (
-                    listing.id,
-                    (listing.title or "")[:500],
-                    (listing.description or "")[:10000],
-                    asking_price,
-                    (city or "")[:200] or None,
-                    (state or "")[:10] or None,
-                    (zip_code or "")[:10] or None,
-                    (listing.post_url or "")[:2000] or None,
-                    beds,
-                    baths,
-                    county_id,
-                    region_id,
-                ),
+                values,
             )
             client.commit()
+        except Exception as col_err:
+            err_msg = str(col_err).lower()
+            if "posted_date" in err_msg or "unknown column" in err_msg:
+                try:
+                    cursor.execute(
+                        f"""INSERT INTO `{table}` (external_id, title, description, asking_price, city, state, zip, url, beds, baths, county_id, region_id)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ON DUPLICATE KEY UPDATE title = VALUES(title), description = VALUES(description),
+                            asking_price = VALUES(asking_price), city = VALUES(city), state = VALUES(state),
+                            zip = VALUES(zip), url = VALUES(url), beds = VALUES(beds), baths = VALUES(baths),
+                            county_id = VALUES(county_id), region_id = VALUES(region_id), updated_at = NOW()""",
+                        values,
+                    )
+                    client.commit()
+                except Exception:
+                    raise col_err
+            else:
+                raise
             if self.logger:
                 self.logger.info(f"""{hilight("[MySQL]", "succ")} Inserted/updated fb_listing {listing.id}.""")
+            # Optional: insert into fb_listing_history for price history
+            history_table = getattr(self.config, "fb_listing_history_table", None)
+            if history_table and _safe_table(history_table) and asking_price is not None:
+                try:
+                    cursor.execute(
+                        f"""INSERT INTO `{history_table}` (external_id, asking_price, recorded_at) VALUES (%s, %s, NOW())""",
+                        (listing.id, asking_price),
+                    )
+                    client.commit()
+                    if self.logger:
+                        self.logger.info(f"""{hilight("[MySQL]", "succ")} Recorded price in {history_table}.""")
+                except Exception as he:
+                    if self.logger:
+                        self.logger.warning(f"""{hilight("[MySQL]", "fail")} fb_listing_history insert failed: {he}""")
+                    try:
+                        client.rollback()
+                    except Exception:
+                        pass
             return True
         except Exception as e:
             if self.logger:

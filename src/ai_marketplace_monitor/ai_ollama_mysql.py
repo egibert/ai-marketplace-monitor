@@ -55,12 +55,18 @@ class OllamaMySQLConfig(OllamaConfig):
             zip_county_table=m.get("zip_county_table", "zip_county"),
             counties_table=m.get("counties_table", "counties"),
             year_tolerance=int(m.get("year_tolerance", 5)),
-            insert_into_fb=m.get("insert_into_fb", False),
+            insert_into_fb=m.get("insert_into_fb", True),
             fb_listings_table=m.get("fb_listings_table", "fb_listings"),
             insert_all_evaluated=m.get("insert_all_evaluated", False),
+            fb_listing_history_table=m.get("fb_listing_history_table"),
             connection_timeout=int(m.get("connection_timeout", 10)),
             geocode_fallback=m.get("geocode_fallback", True),
             geocode_rate_limit_seconds=float(m.get("geocode_rate_limit_seconds", 1.0)),
+            lot_rent_table=m.get("lot_rent_table"),
+            lot_rent_zip_column=m.get("lot_rent_zip_column", "zip"),
+            lot_rent_county_column=m.get("lot_rent_county_column", "county_id"),
+            lot_rent_region_column=m.get("lot_rent_region_column", "region_id"),
+            lot_rent_value_column=m.get("lot_rent_value_column", "avg_rent"),
         )
 
 
@@ -113,10 +119,8 @@ class OllamaMySQLBackend(OllamaBackend):
             prompt += "\n--- End of comparison data ---\n"
             if mysql_cfg and (mysql_cfg.use_sales_comps or mysql_cfg.comparison_table):
                 prompt += (
-                    "\nIn your brief recommendation (after 'Rating <1-5>:'), state clearly: "
-                    "(1) Versus Zillow sold comps: is this a good deal, fair, or overpriced? One short sentence. "
-                    "(2) Versus other Facebook listings: good deal, fair, or overpriced? One short sentence. "
-                    "Keep the total summary under 60 words."
+                    "\nReply concisely: Rating 1-5, then one short sentence (under 25 words) on whether this is a good deal or not. "
+                    "Do not repeat percentages—the exact price comparison (vs Zillow / vs Facebook averages) will be appended automatically."
                 )
         return prompt
 
@@ -139,13 +143,19 @@ class OllamaMySQLBackend(OllamaBackend):
         comparison = self._mysql.fetch_comparison(listing, item_name=item_config.name)
         if response.comment != AIResponse.NOT_EVALUATED:
             comment = response.comment
-            if comparison and comparison.summary:
-                out_fmt = (mysql_cfg and getattr(mysql_cfg, "output_format", None)) or "full"
-                if out_fmt != "none":
-                    db_text = comparison.summary.replace("\n", " ").strip()
-                    if out_fmt == "short":
-                        db_text = db_text[:120] + ("..." if len(db_text) > 120 else "")
-                    comment = comment + " | DB: " + db_text
+            if comparison:
+                # Prefer concise price line (vs Zillow % / vs Facebook %) when available
+                if getattr(comparison, "concise_price_line", None):
+                    comment = comment + " | " + comparison.concise_price_line
+                elif comparison.summary:
+                    out_fmt = (mysql_cfg and getattr(mysql_cfg, "output_format", None)) or "full"
+                    if out_fmt != "none":
+                        db_text = comparison.summary.replace("\n", " ").strip()
+                        if out_fmt == "short":
+                            db_text = db_text[:120] + ("..." if len(db_text) > 120 else "")
+                        comment = comment + " | DB: " + db_text
+                if getattr(comparison, "average_lot_rent_line", None):
+                    comment = comment + " | " + comparison.average_lot_rent_line
             if listing.post_url:
                 comment = comment + "\nListing URL: " + listing.post_url
             if comment != response.comment:
