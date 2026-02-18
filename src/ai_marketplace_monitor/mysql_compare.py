@@ -322,6 +322,16 @@ class MySQLCompare:
             county_id = int(row["county_id"]) if row and isinstance(row, dict) else (int(row[0]) if row else None)
         except Exception:
             county_id = None
+        if county_id is None and _safe_table(self.config.properties_table):
+            try:
+                cursor.execute(
+                    f"SELECT county_id FROM `{self.config.properties_table}` WHERE zip = %s AND county_id IS NOT NULL LIMIT 1",
+                    (zip_code,),
+                )
+                row = cursor.fetchone()
+                county_id = int(row["county_id"]) if row and isinstance(row, dict) else (int(row[0]) if row else None)
+            except Exception:
+                pass
         if county_id is None:
             return (zip_code, None, None)
         try:
@@ -333,6 +343,16 @@ class MySQLCompare:
             region_id = int(row["region_id"]) if row and isinstance(row, dict) else (int(row[0]) if row else None)
         except Exception:
             region_id = None
+        if region_id is None and _safe_table(self.config.properties_table):
+            try:
+                cursor.execute(
+                    f"SELECT region_id FROM `{self.config.properties_table}` WHERE county_id = %s AND region_id IS NOT NULL LIMIT 1",
+                    (county_id,),
+                )
+                row = cursor.fetchone()
+                region_id = int(row["region_id"]) if row and isinstance(row, dict) else (int(row[0]) if row else None)
+        except Exception:
+            pass
         return (zip_code, county_id, region_id)
 
     def _fetch_sales_comps(
