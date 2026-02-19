@@ -311,6 +311,10 @@ class MySQLCompare:
         loc = (listing.location or "").strip()
         zip_match = re.search(r"\b(\d{5})(?:-\d{4})?\b", loc)
         zip_code = zip_match.group(1) if zip_match else None
+        if self.logger and self.logger.isEnabledFor(10):  # DEBUG
+            self.logger.debug(
+                f"""{hilight("[MySQL]", "info")} Zillow comps: resolving location from listing.location={repr(loc)[:80]} -> zip_from_regex={zip_code}"""
+            )
         if not zip_code:
             city, state, _ = self._parse_location_parts(loc)
             if (city or state) and self.config.geocode_fallback:
@@ -345,6 +349,10 @@ class MySQLCompare:
             except Exception:
                 self._drain_cursor(cursor)
         if county_id is None:
+            if self.logger and self.logger.isEnabledFor(10):
+                self.logger.debug(
+                    f"""{hilight("[MySQL]", "info")} Zillow comps: zip={zip_code}, county_id=None (could not resolve county), region_id=None"""
+                )
             return (zip_code, None, None)
         region_id: Optional[int] = None
         try:
@@ -369,6 +377,10 @@ class MySQLCompare:
                 region_id = int(row["region_id"]) if row and isinstance(row, dict) else (int(row[0]) if row else None)
             except Exception:
                 self._drain_cursor(cursor)
+        if self.logger and self.logger.isEnabledFor(10):
+            self.logger.debug(
+                f"""{hilight("[MySQL]", "info")} Zillow comps: resolved location zip={zip_code}, county_id={county_id}, region_id={region_id}"""
+            )
         return (zip_code, county_id, region_id)
 
     def _fetch_sales_comps(
@@ -381,6 +393,13 @@ class MySQLCompare:
             return None
         zip_code, county_id, region_id = self._resolve_location(cursor, listing)
         beds, baths, year_built = _parse_beds_baths_year(listing)
+        year_lo = (year_built - self.config.year_tolerance) if year_built is not None and self.config.year_tolerance >= 0 else None
+        year_hi = (year_built + self.config.year_tolerance) if year_built is not None and self.config.year_tolerance >= 0 else None
+        if self.logger and self.logger.isEnabledFor(10):
+            self.logger.debug(
+                f"""{hilight("[MySQL]", "info")} Zillow comps: parsed listing beds={beds}, baths={baths}, year_built={year_built}; """
+                f"""age filter: year_tolerance={self.config.year_tolerance} -> year_built BETWEEN {year_lo} AND {year_hi} (applied={year_built is not None and self.config.year_tolerance >= 0})"""
+            )
         s_t, p_t = self.config.sales_table, self.config.properties_table
         conditions: List[str] = []
         params: List[Any] = []
@@ -404,6 +423,10 @@ class MySQLCompare:
             tries.append(("county", "p.county_id = %s", [county_id]))
         if region_id is not None:
             tries.append(("region", "p.region_id = %s", [region_id]))
+        if self.logger and self.logger.isEnabledFor(10) and not tries:
+            self.logger.debug(
+                f"""{hilight("[MySQL]", "info")} Zillow comps: no location to query (zip={zip_code}, county_id={county_id}, region_id={region_id}); skipping comps"""
+            )
 
         for scope, scope_where, scope_params in tries:
             try:
@@ -414,18 +437,30 @@ class MySQLCompare:
                 )
                 cursor.execute(q, scope_params + params + [limit])
                 rows = cursor.fetchall()
-            except Exception:
+            except Exception as e:
+                if self.logger and self.logger.isEnabledFor(10):
+                    self.logger.debug(
+                        f"""{hilight("[MySQL]", "info")} Zillow comps: scope={scope} with filters (beds/baths/year): query failed: {e}"""
+                    )
                 self._drain_cursor(cursor)
                 continue
             if rows and not isinstance(rows[0], dict):
                 cols = cursor.column_names if hasattr(cursor, "column_names") else []
                 rows = [dict(zip(cols, r)) for r in rows]
+            if self.logger and self.logger.isEnabledFor(10):
+                self.logger.debug(
+                    f"""{hilight("[MySQL]", "info")} Zillow comps: scope={scope} with filters (beds/baths/year): {len(rows) if rows else 0} rows"""
+                )
             if rows:
                 summary = f"Recent sold comps ({scope}):\n" + self._rows_to_summary(rows)
                 return ComparisonResult(summary=summary, rows=rows, raw_text="\n".join(str(r) for r in rows), sales_scope=scope)
 
         # Fallback: same zip/county/region but without beds/baths/year filter (area comps)
         if where_extra:
+            if self.logger and self.logger.isEnabledFor(10):
+                self.logger.debug(
+                    f"""{hilight("[MySQL]", "info")} Zillow comps: no rows with beds/baths/year filter; trying fallback without age/size filters (area comps)"""
+                )
             for scope, scope_where, scope_params in tries:
                 try:
                     q = (
@@ -435,16 +470,29 @@ class MySQLCompare:
                     )
                     cursor.execute(q, scope_params + [limit])
                     rows = cursor.fetchall()
-                except Exception:
+                except Exception as e:
+                    if self.logger and self.logger.isEnabledFor(10):
+                        self.logger.debug(
+                            f"""{hilight("[MySQL]", "info")} Zillow comps: fallback scope={scope} (no filters): query failed: {e}"""
+                        )
                     self._drain_cursor(cursor)
                     continue
                 if rows and not isinstance(rows[0], dict):
                     cols = cursor.column_names if hasattr(cursor, "column_names") else []
                     rows = [dict(zip(cols, r)) for r in rows]
+                if self.logger and self.logger.isEnabledFor(10):
+                    self.logger.debug(
+                        f"""{hilight("[MySQL]", "info")} Zillow comps: fallback scope={scope} (no beds/baths/year): {len(rows) if rows else 0} rows"""
+                    )
                 if rows:
                     summary = f"Recent sold comps ({scope}, area):\n" + self._rows_to_summary(rows)
                     return ComparisonResult(summary=summary, rows=rows, raw_text="\n".join(str(r) for r in rows), sales_scope=scope)
 
+        if self.logger and self.logger.isEnabledFor(10):
+            self.logger.debug(
+                f"""{hilight("[MySQL]", "info")} Zillow comps: no comps found (tried zip/county/region with and without beds/baths/year filter). """
+                f"""Location: zip={zip_code}, county_id={county_id}, region_id={region_id}; filters used: beds={beds}, baths={baths}, year_built={year_built} (tolerance={self.config.year_tolerance})"""
+            )
         return ComparisonResult(
             summary="No recent sales comps found for this location (zip → county → region).",
             rows=[],
@@ -526,8 +574,18 @@ class MySQLCompare:
                 scope_txt = f" (computed using {sales_scope})" if sales_scope else ""
                 concise_parts.append(f"Vs Zillow: {abs(pct):.0f}% {'below' if pct < 0 else 'above'} average when compared to recently sold Zillow listings{scope_txt}.")
             else:
+                if self.logger and self.logger.isEnabledFor(10):
+                    self.logger.debug(
+                        f"""{hilight("[MySQL]", "info")} Vs Zillow: no comps (sales_res has {len(sales_res.rows)} rows but no valid sale_price in any row)"""
+                    )
                 concise_parts.append("Vs Zillow: no comps.")
         elif self.config.use_sales_comps:
+            if self.logger and self.logger.isEnabledFor(10):
+                nrows = len(sales_res.rows) if sales_res else 0
+                reason = "no listing price" if listing_price is None else f"no sales comps returned (rows={nrows})"
+                self.logger.debug(
+                    f"""{hilight("[MySQL]", "info")} Vs Zillow: no comps -> {reason}"""
+                )
             concise_parts.append("Vs Zillow: no comps.")
         if fb_res and fb_res.rows and listing_price is not None:
             price_col = self.config.price_column or "asking_price"
