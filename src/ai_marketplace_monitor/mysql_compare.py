@@ -273,20 +273,35 @@ class MySQLCompare:
                     )
                 time.sleep(max(0, self.config.geocode_rate_limit_seconds))
                 return None
-            for feature in results:
-                postcode = (feature.get("postcode") or "").strip()
-                if postcode and re.match(r"^\d{5}(?:-\d{4})?$", postcode):
-                    zip_code = postcode[:5]
-                    try:
-                        cache.set(cache_key, zip_code, tag="geocode_zip")
-                    except Exception:
-                        pass
-                    if self.logger and self.logger.isEnabledFor(10):
-                        self.logger.debug(
-                            f"""{hilight("[MySQL]", "info")} Geocode Geoapify: {repr(query)} -> zip={zip_code} (from result with postcode)"""
-                        )
-                    time.sleep(max(0, self.config.geocode_rate_limit_seconds))
-                    return zip_code
+            for i, feature in enumerate(results):
+                postcode = (feature.get("postcode") or feature.get("postal_code") or "").strip()
+                if not postcode:
+                    formatted = (feature.get("formatted") or "")
+                    zip_match = re.search(r"\b(\d{5})(?:-\d{4})?\b", formatted)
+                    if zip_match:
+                        postcode = zip_match.group(1)
+                if postcode:
+                    five_digit = re.match(r"^(\d{5})(?:-\d{4})?$", postcode.strip())
+                    if five_digit:
+                        zip_code = five_digit.group(1)
+                    else:
+                        five_digit = re.search(r"\d{5}", postcode)
+                        zip_code = five_digit.group(0)[:5] if five_digit else None
+                    if zip_code and len(zip_code) == 5:
+                            try:
+                                cache.set(cache_key, zip_code, tag="geocode_zip")
+                            except Exception:
+                                pass
+                            if self.logger and self.logger.isEnabledFor(10):
+                                self.logger.debug(
+                                    f"""{hilight("[MySQL]", "info")} Geocode Geoapify: {repr(query)} -> zip={zip_code}"""
+                                )
+                            time.sleep(max(0, self.config.geocode_rate_limit_seconds))
+                            return zip_code
+                if self.logger and self.logger.isEnabledFor(10):
+                    self.logger.debug(
+                        f"""{hilight("[MySQL]", "info")} Geocode Geoapify: result[{i}] type={feature.get('result_type')} postcode={repr(feature.get('postcode'))} formatted={repr((feature.get('formatted') or '')[:80])}"""
+                    )
             if self.logger and self.logger.isEnabledFor(10):
                 self.logger.debug(
                     f"""{hilight("[MySQL]", "info")} Geocode Geoapify: {repr(query)} -> no result had US postcode (checked {len(results)} results)"""
