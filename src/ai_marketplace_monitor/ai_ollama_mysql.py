@@ -61,6 +61,7 @@ class OllamaMySQLConfig(OllamaConfig):
             fb_listing_history_table=m.get("fb_listing_history_table"),
             connection_timeout=int(m.get("connection_timeout", 10)),
             geocode_fallback=m.get("geocode_fallback", True),
+            geocode_geoapify_api_key=m.get("geocode_geoapify_api_key"),
             geocode_rate_limit_seconds=float(m.get("geocode_rate_limit_seconds", 1.0)),
             lot_rent_table=m.get("lot_rent_table"),
             lot_rent_zip_column=m.get("lot_rent_zip_column", "zip"),

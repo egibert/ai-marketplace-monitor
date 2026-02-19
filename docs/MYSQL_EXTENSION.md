@@ -62,8 +62,9 @@ max_rows = 10
 insert_into_fb = true
 fb_listings_table = "fb_listings"
 
-# Resolve city/state → zip via Nominatim first (default); DB fallback. Set false to skip API.
+# Resolve city/state → zip via Geoapify Geocoding API when no zip in listing. Set false to skip.
 # geocode_fallback = true
+# geocode_geoapify_api_key = "..."  # required for city/state → zip (https://www.geoapify.com/)
 # geocode_rate_limit_seconds = 1.0
 
 output_format = "full"
@@ -93,7 +94,7 @@ Parsed from **title** and **description** (e.g. “3 bed”, “2 bath”, “bu
 - **listing.location** is parsed for a 5-digit **zip** (e.g. “Houston, TX 77001” or “77001”).
 - **zip_county** gives **county_id**; **counties** gives **region_id**.
 - Sales comps are queried in order: first by **zip**, then by **county**, then by **region** until results are found.
-- **City/state → zip:** When there’s no 5-digit zip in the listing text, the code resolves zip from **city + state** for more reliable sales comps. **Geocode (Nominatim) is tried first**: the code calls **OpenStreetMap Nominatim** with the listing’s city and state to get a US postcode (cached, rate-limited 1 req/sec). If geocode fails or returns nothing, it falls back to your **properties** table: one row with matching `city` and `state` is used for that row’s `zip`. Set **geocode_fallback = false** in `[ai.xxx.mysql]` to skip the API and use only the DB.
+- **City/state → zip:** When there’s no 5-digit zip in the listing text, the code resolves zip from **city + state** via the **Geoapify Geocoding API** (cached). Set **geocode_geoapify_api_key** in `[ai.xxx.mysql]` (get a key from [Geoapify](https://www.geoapify.com/)). Set **geocode_fallback = false** to skip geocoding when no zip is in the listing.
 
 ### 3. Sales comps query
 
@@ -152,8 +153,9 @@ Parsed from **title** and **description** (e.g. “3 bed”, “2 bath”, “bu
 | **comparison_query**  | Custom SQL (placeholders {title}, {price}, {location}, {item_name}). Overrides built-in comparison when set. |
 | **max_rows**          | Max rows for FB comparison (default 10). |
 | **output_format**     | DB context in notifications: "full", "short", or "none". |
-| **geocode_fallback**  | When true (default), resolve city/state → zip via Nominatim first; DB is fallback. Set false to use only DB. |
-| **geocode_rate_limit_seconds** | Seconds to wait after each Nominatim call (default 1.0). |
+| **geocode_fallback**  | When true (default), resolve city/state → zip via Geoapify Geocoding API when no zip in listing. Set false to skip. |
+| **geocode_geoapify_api_key** | Required for city/state → zip. Get from [Geoapify](https://www.geoapify.com/). |
+| **geocode_rate_limit_seconds** | Seconds to wait after each geocode call (default 1.0). |
 | **lot_rent_table**    | Optional. Table for average lot rent lookup (e.g. lot_rents). When set and lot rent is not in the listing description, a line like "Average lot rent (zip 16428): $400" is appended. Lookup order: zip → county → region. |
 | **lot_rent_zip_column**, **lot_rent_county_column**, **lot_rent_region_column**, **lot_rent_value_column** | Column names for lot rent table (defaults: zip, county_id, region_id, avg_rent). |
 

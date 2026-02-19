@@ -62,9 +62,11 @@ class MySQLConfig:
     # Connection timeout (seconds); avoid hanging if MySQL is unreachable
     connection_timeout: int = 10
 
-    # When true (default), resolve city/state -> zip via Nominatim first; DB is fallback. More reliable than DB-only.
+    # When true (default), resolve city/state -> zip via Geoapify Geocoding API when no zip in listing text.
     geocode_fallback: bool = True
-    # Nominatim asks for 1 req/sec; we sleep this many seconds after each API call
+    # Required for city/state -> zip. Get a key from https://www.geoapify.com/ (Geocoding API).
+    geocode_geoapify_api_key: Optional[str] = None
+    # Sleep this many seconds after each geocode API call.
     geocode_rate_limit_seconds: float = 1.0
 
     # --- Average lot rent (when not in listing description): query by zip → county → region
@@ -223,7 +225,7 @@ class MySQLCompare:
             self._client = None
 
     def _geocode_city_state_to_zip(self, city: str, state: str) -> Optional[str]:
-        """Call OpenStreetMap Nominatim to get a zip for city, state. Results are cached. Rate-limited to 1 req/sec."""
+        """Resolve city, state to zip via Geoapify Geocoding API. Results are cached. Rate-limited."""
         if not city and not state:
             return None
         query = f"{city or ''},{state or ''},USA".strip(" ,")
@@ -237,65 +239,58 @@ class MySQLCompare:
                 return str(cached) if cached else None
         except Exception:
             pass
+        api_key = getattr(self.config, "geocode_geoapify_api_key", None) or ""
+        if not api_key.strip():
+            if self.logger:
+                self.logger.warning(
+                    f"""{hilight("[MySQL]", "fail")} geocode_geoapify_api_key is not set; cannot resolve city/state to zip"""
+                )
+            return None
         try:
             import requests  # type: ignore
 
-            url = "https://nominatim.openstreetmap.org/search"
-            params = {"q": query, "format": "json", "addressdetails": 1, "limit": 1}
-            headers = {"User-Agent": "ai-marketplace-monitor/1.0 (location lookup)"}
+            url = "https://api.geoapify.com/v1/geocode/search"
+            params = {"text": query, "format": "json", "apiKey": api_key}
+            headers = {"Accept": "application/json"}
             resp = requests.get(url, params=params, headers=headers, timeout=10)
+            if self.logger and self.logger.isEnabledFor(10):
+                self.logger.debug(
+                    f"""{hilight("[MySQL]", "info")} Geocode Geoapify: {repr(query)} -> status={resp.status_code}"""
+                )
             resp.raise_for_status()
             data = resp.json()
-            if not data or not isinstance(data, list):
+            results = (data or {}).get("results") or []
+            if not results:
+                if self.logger and self.logger.isEnabledFor(10):
+                    self.logger.debug(
+                        f"""{hilight("[MySQL]", "info")} Geocode Geoapify: {repr(query)} -> no results"""
+                    )
                 time.sleep(max(0, self.config.geocode_rate_limit_seconds))
                 return None
-            first = data[0]
-            address = first.get("address") or {}
-            postcode = address.get("postcode")
-            if postcode:
-                zip_code = str(postcode).strip()
-                if re.match(r"^\d{5}(?:-\d{4})?$", zip_code):
-                    zip_code = zip_code[:5]
+            first = results[0]
+            postcode = (first.get("postcode") or "").strip()
+            if postcode and re.match(r"^\d{5}(?:-\d{4})?$", postcode):
+                zip_code = postcode[:5]
                 try:
                     cache.set(cache_key, zip_code, tag="geocode_zip")
                 except Exception:
                     pass
+                if self.logger and self.logger.isEnabledFor(10):
+                    self.logger.debug(
+                        f"""{hilight("[MySQL]", "info")} Geocode Geoapify: {repr(query)} -> zip={zip_code}"""
+                    )
                 time.sleep(max(0, self.config.geocode_rate_limit_seconds))
                 return zip_code
+            if self.logger and self.logger.isEnabledFor(10):
+                self.logger.debug(
+                    f"""{hilight("[MySQL]", "info")} Geocode Geoapify: {repr(query)} -> no postcode in result"""
+                )
         except Exception as e:
             if self.logger:
                 self.logger.warning(
-                    f"""{hilight("[MySQL]", "fail")} Geocode API failed for {repr(query)}: {e}"""
+                    f"""{hilight("[MySQL]", "fail")} Geoapify Geocoding API failed for {repr(query)}: {e}"""
                 )
-            time.sleep(max(0, self.config.geocode_rate_limit_seconds))
-        return None
-
-    def _zip_from_city_state(self, cursor: Any, city: str, state: str) -> Optional[str]:
-        """Look up a zip from city+state using the properties table (or location_lookup if configured)."""
-        if not city and not state:
-            return None
-        if not _safe_table(self.config.properties_table):
-            return None
-        p_t = self.config.properties_table
-        try:
-            if city and state:
-                cursor.execute(
-                    f"""SELECT zip FROM `{p_t}` WHERE LOWER(TRIM(city)) = LOWER(TRIM(%s)) AND LOWER(TRIM(state)) = LOWER(TRIM(%s)) AND zip IS NOT NULL AND zip != '' LIMIT 1""",
-                    (city, state),
-                )
-            elif state:
-                cursor.execute(
-                    f"""SELECT zip FROM `{p_t}` WHERE LOWER(TRIM(state)) = LOWER(TRIM(%s)) AND zip IS NOT NULL AND zip != '' LIMIT 1""",
-                    (state,),
-                )
-            else:
-                return None
-            row = cursor.fetchone()
-            if row:
-                z = row.get("zip", row[0]) if isinstance(row, dict) else row[0]
-                return str(z).strip() if z else None
-        except Exception:
-            pass
+        time.sleep(max(0, self.config.geocode_rate_limit_seconds))
         return None
 
     def _drain_cursor(self, cursor: Any) -> None:
@@ -307,11 +302,11 @@ class MySQLCompare:
             pass
 
     def _resolve_location(self, cursor: Any, listing: Listing) -> Tuple[Optional[str], Optional[int], Optional[int]]:
-        """Resolve listing.location to (zip, county_id, region_id). When no zip in string: try geocode (Nominatim) first, then city+state -> zip from properties as fallback."""
+        """Resolve listing.location to (zip, county_id, region_id). Zip from regex in text, else Geoapify Geocoding API (city/state -> zip)."""
         loc = (listing.location or "").strip()
         zip_match = re.search(r"\b(\d{5})(?:-\d{4})?\b", loc)
         zip_code = zip_match.group(1) if zip_match else None
-        if self.logger and self.logger.isEnabledFor(10):  # DEBUG
+        if self.logger and self.logger.isEnabledFor(10):
             self.logger.debug(
                 f"""{hilight("[MySQL]", "info")} Zillow comps: resolving location from listing.location={repr(loc)[:80]} -> zip_from_regex={zip_code}"""
             )
@@ -319,9 +314,15 @@ class MySQLCompare:
             city, state, _ = self._parse_location_parts(loc)
             if (city or state) and self.config.geocode_fallback:
                 zip_code = self._geocode_city_state_to_zip(city or "", state or "")
-            if not zip_code and self.config.use_sales_comps and _safe_table(self.config.properties_table):
-                zip_code = self._zip_from_city_state(cursor, city or "", state or "")
+                if self.logger and self.logger.isEnabledFor(10):
+                    self.logger.debug(
+                        f"""{hilight("[MySQL]", "info")} Zillow comps: after Geoapify geocode city={repr(city)} state={repr(state)} -> zip={zip_code}"""
+                    )
         if not zip_code:
+            if self.logger and self.logger.isEnabledFor(10):
+                self.logger.debug(
+                    f"""{hilight("[MySQL]", "info")} Zillow comps: no zip resolved; cannot query comps"""
+                )
             return (None, None, None)
         if not _safe_table(self.config.zip_county_table) or not _safe_table(self.config.counties_table):
             return (zip_code, None, None)
