@@ -32,6 +32,7 @@ dependencies = [
   "jinja2>=3.0.0",
   "pyparsing>=3.1.0",
   "requests>=2.30.0",
+  "uszipcode>=1.0.1",
   "CurrencyConverter>=0.18.0",
   "tomli==2.2.1; python_version < '3.11'",
   "safety>=3.5.2",

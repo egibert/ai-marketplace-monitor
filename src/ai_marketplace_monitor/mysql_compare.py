@@ -62,12 +62,8 @@ class MySQLConfig:
     # Connection timeout (seconds); avoid hanging if MySQL is unreachable
     connection_timeout: int = 10
 
-    # When true (default), resolve city/state -> zip via Geoapify Geocoding API when no zip in listing text.
+    # When true (default), resolve city/state -> zip via uszipcode (local US zip DB) when no zip in listing text.
     geocode_fallback: bool = True
-    # Required for city/state -> zip. Get a key from https://www.geoapify.com/ (Geocoding API).
-    geocode_geoapify_api_key: Optional[str] = None
-    # Sleep this many seconds after each geocode API call.
-    geocode_rate_limit_seconds: float = 1.0
 
     # --- Average lot rent (when not in listing description): query by zip → county → region
     lot_rent_table: Optional[str] = None  # e.g. lot_rents
@@ -225,13 +221,14 @@ class MySQLCompare:
             self._client = None
 
     def _geocode_city_state_to_zip(self, city: str, state: str) -> Optional[str]:
-        """Resolve city, state to zip via Geoapify Geocoding API. Results are cached. Rate-limited."""
+        """Resolve city, state to zip via uszipcode (local US zip DB). Results are cached."""
         if not city and not state:
             return None
-        query = f"{city or ''},{state or ''},USA".strip(" ,")
-        if not query or query == ",USA":
+        city_clean = (city or "").strip()
+        state_clean = (state or "").strip()
+        if not city_clean and not state_clean:
             return None
-        normalized = re.sub(r"\s+", " ", query.lower()).strip()
+        normalized = re.sub(r"\s+", " ", f"{city_clean},{state_clean}".lower()).strip()
         cache_key = ("geocode_zip", normalized)
         try:
             cached = cache.get(cache_key)
@@ -239,79 +236,43 @@ class MySQLCompare:
                 return str(cached) if cached else None
         except Exception:
             pass
-        api_key = getattr(self.config, "geocode_geoapify_api_key", None) or ""
-        if not api_key.strip():
+        try:
+            from uszipcode import SearchEngine  # type: ignore
+
+            search = SearchEngine()
+            zipcodes = search.by_city_and_state(city_clean, state_clean, returns=10)
+            search.close()
+            if zipcodes:
+                zip_obj = zipcodes[0]
+                zip_code = getattr(zip_obj, "zipcode", None)
+                if zip_code is not None:
+                    zip_code = str(zip_code).strip()
+                    if len(zip_code) < 5:
+                        zip_code = zip_code.zfill(5)
+                    if re.match(r"^\d{5}$", zip_code):
+                        try:
+                            cache.set(cache_key, zip_code, tag="geocode_zip")
+                        except Exception:
+                            pass
+                        if self.logger and self.logger.isEnabledFor(10):
+                            self.logger.debug(
+                                f"""{hilight("[MySQL]", "info")} uszipcode: {city_clean!r}, {state_clean!r} -> zip={zip_code}"""
+                            )
+                        return zip_code
+            if self.logger and self.logger.isEnabledFor(10):
+                self.logger.debug(
+                    f"""{hilight("[MySQL]", "info")} uszipcode: {city_clean!r}, {state_clean!r} -> no zip found"""
+                )
+        except ImportError as e:
             if self.logger:
                 self.logger.warning(
-                    f"""{hilight("[MySQL]", "fail")} geocode_geoapify_api_key is not set; cannot resolve city/state to zip"""
-                )
-            return None
-        try:
-            import requests  # type: ignore
-
-            url = "https://api.geoapify.com/v1/geocode/search"
-            params = {
-                "text": query,
-                "format": "json",
-                "filter": "countrycode:us",
-                "limit": 10,
-                "apiKey": api_key,
-            }
-            headers = {"Accept": "application/json"}
-            resp = requests.get(url, params=params, headers=headers, timeout=10)
-            if self.logger and self.logger.isEnabledFor(10):
-                self.logger.debug(
-                    f"""{hilight("[MySQL]", "info")} Geocode Geoapify: {repr(query)} -> status={resp.status_code}"""
-                )
-            resp.raise_for_status()
-            data = resp.json()
-            results = (data or {}).get("results") or []
-            if not results:
-                if self.logger and self.logger.isEnabledFor(10):
-                    self.logger.debug(
-                        f"""{hilight("[MySQL]", "info")} Geocode Geoapify: {repr(query)} -> no results"""
-                    )
-                time.sleep(max(0, self.config.geocode_rate_limit_seconds))
-                return None
-            for i, feature in enumerate(results):
-                postcode = (feature.get("postcode") or feature.get("postal_code") or "").strip()
-                if not postcode:
-                    formatted = (feature.get("formatted") or "")
-                    zip_match = re.search(r"\b(\d{5})(?:-\d{4})?\b", formatted)
-                    if zip_match:
-                        postcode = zip_match.group(1)
-                if postcode:
-                    five_digit = re.match(r"^(\d{5})(?:-\d{4})?$", postcode.strip())
-                    if five_digit:
-                        zip_code = five_digit.group(1)
-                    else:
-                        five_digit = re.search(r"\d{5}", postcode)
-                        zip_code = five_digit.group(0)[:5] if five_digit else None
-                    if zip_code and len(zip_code) == 5:
-                            try:
-                                cache.set(cache_key, zip_code, tag="geocode_zip")
-                            except Exception:
-                                pass
-                            if self.logger and self.logger.isEnabledFor(10):
-                                self.logger.debug(
-                                    f"""{hilight("[MySQL]", "info")} Geocode Geoapify: {repr(query)} -> zip={zip_code}"""
-                                )
-                            time.sleep(max(0, self.config.geocode_rate_limit_seconds))
-                            return zip_code
-                if self.logger and self.logger.isEnabledFor(10):
-                    self.logger.debug(
-                        f"""{hilight("[MySQL]", "info")} Geocode Geoapify: result[{i}] type={feature.get('result_type')} postcode={repr(feature.get('postcode'))} formatted={repr((feature.get('formatted') or '')[:80])}"""
-                    )
-            if self.logger and self.logger.isEnabledFor(10):
-                self.logger.debug(
-                    f"""{hilight("[MySQL]", "info")} Geocode Geoapify: {repr(query)} -> no result had US postcode (checked {len(results)} results)"""
+                    f"""{hilight("[MySQL]", "fail")} uszipcode not installed; pip install uszipcode: {e}"""
                 )
         except Exception as e:
             if self.logger:
                 self.logger.warning(
-                    f"""{hilight("[MySQL]", "fail")} Geoapify Geocoding API failed for {repr(query)}: {e}"""
+                    f"""{hilight("[MySQL]", "fail")} uszipcode failed for {city_clean!r}, {state_clean!r}: {e}"""
                 )
-        time.sleep(max(0, self.config.geocode_rate_limit_seconds))
         return None
 
     def _drain_cursor(self, cursor: Any) -> None:
@@ -323,7 +284,7 @@ class MySQLCompare:
             pass
 
     def _resolve_location(self, cursor: Any, listing: Listing) -> Tuple[Optional[str], Optional[int], Optional[int]]:
-        """Resolve listing.location to (zip, county_id, region_id). Zip from regex in text, else Geoapify Geocoding API (city/state -> zip)."""
+        """Resolve listing.location to (zip, county_id, region_id). Zip from regex in text, else uszipcode (city/state -> zip)."""
         loc = (listing.location or "").strip()
         zip_match = re.search(r"\b(\d{5})(?:-\d{4})?\b", loc)
         zip_code = zip_match.group(1) if zip_match else None
@@ -337,7 +298,7 @@ class MySQLCompare:
                 zip_code = self._geocode_city_state_to_zip(city or "", state or "")
                 if self.logger and self.logger.isEnabledFor(10):
                     self.logger.debug(
-                        f"""{hilight("[MySQL]", "info")} Zillow comps: after Geoapify geocode city={repr(city)} state={repr(state)} -> zip={zip_code}"""
+                        f"""{hilight("[MySQL]", "info")} Zillow comps: after uszipcode city={repr(city)} state={repr(state)} -> zip={zip_code}"""
                     )
         if not zip_code:
             if self.logger and self.logger.isEnabledFor(10):
