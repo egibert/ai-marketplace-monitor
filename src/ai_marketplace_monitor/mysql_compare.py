@@ -247,6 +247,26 @@ class MySQLCompare:
             and _safe_table(self.config.city_zip_table)
         ):
             tbl = self.config.city_zip_table
+            # Diagnose: which DB are we connected to, and does city_zip have rows?
+            try:
+                cursor.execute("SELECT DATABASE() AS db")
+                db_row = cursor.fetchone()
+                self._drain_cursor(cursor)
+                db_name = (db_row.get("db") if isinstance(db_row, dict) else (db_row[0] if db_row else None)) or "?"
+                cursor.execute(f"SELECT COUNT(*) AS n FROM `{tbl}`")
+                count_row = cursor.fetchone()
+                self._drain_cursor(cursor)
+                n = (count_row.get("n") if isinstance(count_row, dict) else (count_row[0] if count_row else 0)) or 0
+                if self.logger:
+                    self.logger.info(
+                        f"""{hilight("[MySQL]", "info")} city_zip: database={db_name}, table={tbl}, rows={n}; querying city={city_clean!r} state={state_clean!r}"""
+                    )
+            except Exception as e:
+                if self.logger:
+                    self.logger.info(
+                        f"""{hilight("[MySQL]", "info")} city_zip: diagnostic failed: {e}; continuing with lookup"""
+                    )
+                self._drain_cursor(cursor)
             # Match how zip.py stores: TRIM(city)=%s and TRIM(state)=%s (params already stripped)
             queries_to_try: List[Tuple[str, Tuple[Any, ...]]] = [
                 (f"SELECT zip FROM `{tbl}` WHERE TRIM(city) = %s AND TRIM(state) = %s LIMIT 1", (city_clean, state_clean)),
@@ -281,9 +301,14 @@ class MySQLCompare:
             except Exception:
                 pass
             return zip_code
-        if self.logger and self.logger.isEnabledFor(10):
-            self.logger.debug(
-                f"""{hilight("[MySQL]", "info")} city/state -> zip: {city_clean!r}, {state_clean!r} -> not found (zip only from listing text or city_zip table)"""
+        if self.logger:
+            if not (cursor and self.config.city_zip_table and _safe_table(self.config.city_zip_table)):
+                self.logger.info(
+                    f"""{hilight("[MySQL]", "info")} city_zip: skipped (cursor=%s, city_zip_table=%r, safe=%s)"""
+                    % (bool(cursor), getattr(self.config, "city_zip_table", None), _safe_table(self.config.city_zip_table) if getattr(self.config, "city_zip_table", None) else False)
+                )
+            self.logger.info(
+                f"""{hilight("[MySQL]", "info")} city/state -> zip: {city_clean!r}, {state_clean!r} -> not found"""
             )
         return None
 
