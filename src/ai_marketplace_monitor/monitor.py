@@ -223,6 +223,21 @@ class MarketplaceMonitor:
                 continue
             new_listings.append(listing)
             listing_ratings.append(res)
+            # Notify immediately when a listing scores >= threshold (do not wait for batch)
+            for user in users_to_notify:
+                User(self.config.user[user], logger=self.logger).notify(
+                    [listing], [res], item_config
+                )
+            for agent in self.ai_agents:
+                on_accepted = getattr(agent, "on_listing_accepted", None)
+                if callable(on_accepted):
+                    try:
+                        on_accepted(listing, item_config, marketplace_config)
+                    except Exception as e:
+                        if self.logger:
+                            self.logger.warning(
+                                f"""{hilight("[AI]", "fail")} on_listing_accepted failed for {agent.config.name}: {e}"""
+                            )
 
         p = inflect.engine()
         if self.logger:
@@ -233,21 +248,6 @@ class MarketplaceMonitor:
             counter.increment(
                 CounterItem.NEW_VALIDATED_LISTING, item_config.name, len(new_listings)
             )
-            for user in users_to_notify:
-                User(self.config.user[user], logger=self.logger).notify(
-                    new_listings, listing_ratings, item_config
-                )
-            for listing in new_listings:
-                for agent in self.ai_agents:
-                    on_accepted = getattr(agent, "on_listing_accepted", None)
-                    if callable(on_accepted):
-                        try:
-                            on_accepted(listing, item_config, marketplace_config)
-                        except Exception as e:
-                            if self.logger:
-                                self.logger.warning(
-                                    f"""{hilight("[AI]", "fail")} on_listing_accepted failed for {agent.config.name}: {e}"""
-                                )
         time.sleep(5)
 
     def _select_translator(
