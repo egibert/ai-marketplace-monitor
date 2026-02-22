@@ -246,20 +246,35 @@ class MySQLCompare:
             and self.config.city_zip_table
             and _safe_table(self.config.city_zip_table)
         ):
-            try:
-                cursor.execute(
-                    f"SELECT zip FROM `{self.config.city_zip_table}` WHERE LOWER(TRIM(city)) = LOWER(TRIM(%s)) AND LOWER(TRIM(state)) = LOWER(TRIM(%s)) LIMIT 1",
-                    (city_clean, state_clean),
-                )
-                row = cursor.fetchone()
-                self._drain_cursor(cursor)
-                if row:
-                    zip_code = (
-                        row.get("zip", row[0]) if isinstance(row, dict) else row[0]
-                    )
-                    zip_code = str(zip_code).strip() if zip_code else None
-            except Exception:
-                self._drain_cursor(cursor)
+            tbl = self.config.city_zip_table
+            # Match how zip.py stores: TRIM(city)=%s and TRIM(state)=%s (params already stripped)
+            queries_to_try: List[Tuple[str, Tuple[Any, ...]]] = [
+                (f"SELECT zip FROM `{tbl}` WHERE TRIM(city) = %s AND TRIM(state) = %s LIMIT 1", (city_clean, state_clean)),
+                (f"SELECT zip FROM `{tbl}` WHERE LOWER(TRIM(city)) = LOWER(%s) AND LOWER(TRIM(state)) = LOWER(%s) LIMIT 1", (city_clean, state_clean)),
+                (f"SELECT zip FROM `{tbl}` WHERE state = %s AND city LIKE %s LIMIT 1", (state_clean, city_clean + "%")),
+            ]
+            for q, params in queries_to_try:
+                try:
+                    cursor.execute(q, params)
+                    row = cursor.fetchone()
+                    self._drain_cursor(cursor)
+                    if row:
+                        if isinstance(row, dict):
+                            zip_code = row.get("zip") or row.get("ZIP") or (row[0] if 0 in row else None)
+                        else:
+                            zip_code = row[0] if row else None
+                        zip_code = str(zip_code).strip() if zip_code else None
+                        if zip_code and self.logger and self.logger.isEnabledFor(10):
+                            self.logger.debug(
+                                f"""{hilight("[MySQL]", "info")} city_zip matched with params city={city_clean!r} state={state_clean!r} -> zip={zip_code}"""
+                            )
+                        break
+                except Exception as e:
+                    if self.logger:
+                        self.logger.info(
+                            f"""{hilight("[MySQL]", "info")} city_zip query error: {e}; city={city_clean!r} state={state_clean!r}"""
+                        )
+                    self._drain_cursor(cursor)
         if zip_code:
             try:
                 cache.set(cache_key, zip_code)
