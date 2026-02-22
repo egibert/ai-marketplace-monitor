@@ -251,6 +251,18 @@ class TelegramNotificationConfig(PushNotificationConfig):
                     if logger:
                         logger.error(f"Max retries ({max_retries}) reached for 429 errors")
                     return False
+            except telegram.error.BadRequest as e:
+                # Chat not found / wrong chat_id: do not retry, show how to fix
+                err_lower = str(e).lower()
+                if "chat" in err_lower and ("not found" in err_lower or "not exist" in err_lower):
+                    if logger:
+                        logger.error(
+                            "Telegram: chat not found. Fix telegram_chat_id: 1) Send /start or any message to your bot. "
+                            "2) Open https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates in a browser. "
+                            "3) Find \"chat\":{\"id\": NUMBER} — use that number as telegram_chat_id (groups have negative id)."
+                        )
+                    return False
+                raise
             except telegram.error.TelegramError as e:
                 # Handle other Telegram errors with exponential backoff
                 if attempt < max_retries:
