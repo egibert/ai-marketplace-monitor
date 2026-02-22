@@ -1,0 +1,23 @@
+# Craigslist Monitor – separate from ai-marketplace-monitor.
+# Use the same telegram_token and telegram_chat_id to get alerts in one place.
+
+[craigslist]
+# Site subdomain: philadelphia, pittsburgh, losangeles, etc.
+site = "philadelphia"
+# Category: sss = all for sale, mca = mobile homes, etc.
+category = "sss"
+# Search query
+query = "mobile home"
+# Min price (optional, 0 = no filter)
+min_price = 0
+# Max price (optional, 0 = no filter)
+max_price = 0
+
+[telegram]
+# Same bot/chat as ai-marketplace-monitor to receive alerts in one place
+telegram_token = "YOUR_BOT_TOKEN"
+telegram_chat_id = "YOUR_CHAT_ID"
+
+[monitor]
+# How often to check (minutes)
+interval_minutes = 30

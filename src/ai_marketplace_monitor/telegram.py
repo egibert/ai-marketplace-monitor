@@ -257,9 +257,9 @@ class TelegramNotificationConfig(PushNotificationConfig):
                 if "chat" in err_lower and ("not found" in err_lower or "not exist" in err_lower):
                     if logger:
                         logger.error(
-                            "Telegram: chat not found. Fix telegram_chat_id: 1) Send /start or any message to your bot. "
-                            "2) Open https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates in a browser. "
-                            "3) Find \"chat\":{\"id\": NUMBER} — use that number as telegram_chat_id (groups have negative id)."
+                            "Telegram: chat not found. Private chat: send /start to your bot, then curl getUpdates and use \"chat\":{\"id\": NUMBER}. "
+                            "Group: 1) Add your bot to the group (Members → Add). 2) Send any message in the group. "
+                            "3) curl getUpdates and find the update from the group — use that \"chat\":{\"id\": -100...} (negative number, include the minus)."
                         )
                     return False
                 raise

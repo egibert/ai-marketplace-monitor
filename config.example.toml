@@ -136,8 +136,7 @@ search_region = "pa"
 notify = ["me"]
 
 # When a listing passes the rating threshold, it is sent to Telegram for users in notify who have notify_with = ["telegram"].
-# If you get "chat not found": 1) Send /start or any message to your bot. 2) Open https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates
-# 3) Find "chat":{"id": NUMBER} — use that number as telegram_chat_id (for groups the id is negative).
+# chat_id: Private — message your bot, then curl getUpdates; use "chat":{"id": NUMBER}. Group — add bot to group, send a message in group, then curl getUpdates; use the "chat":{"id": -1001234567890} (negative, with minus sign). Bot must be in the group.
 [notification.telegram]
 telegram_token = 'YOUR_BOT_TOKEN'
 telegram_chat_id = 'YOUR_CHAT_ID'
