@@ -247,26 +247,6 @@ class MySQLCompare:
             and _safe_table(self.config.city_zip_table)
         ):
             tbl = self.config.city_zip_table
-            # Diagnose: which DB are we connected to, and does city_zip have rows?
-            try:
-                cursor.execute("SELECT DATABASE() AS db")
-                db_row = cursor.fetchone()
-                self._drain_cursor(cursor)
-                db_name = (db_row.get("db") if isinstance(db_row, dict) else (db_row[0] if db_row else None)) or "?"
-                cursor.execute(f"SELECT COUNT(*) AS n FROM `{tbl}`")
-                count_row = cursor.fetchone()
-                self._drain_cursor(cursor)
-                n = (count_row.get("n") if isinstance(count_row, dict) else (count_row[0] if count_row else 0)) or 0
-                if self.logger:
-                    self.logger.info(
-                        f"""{hilight("[MySQL]", "info")} city_zip: database={db_name}, table={tbl}, rows={n}; querying city={city_clean!r} state={state_clean!r}"""
-                    )
-            except Exception as e:
-                if self.logger:
-                    self.logger.info(
-                        f"""{hilight("[MySQL]", "info")} city_zip: diagnostic failed: {e}; continuing with lookup"""
-                    )
-                self._drain_cursor(cursor)
             # Match how zip.py stores: TRIM(city)=%s and TRIM(state)=%s (params already stripped)
             queries_to_try: List[Tuple[str, Tuple[Any, ...]]] = [
                 (f"SELECT zip FROM `{tbl}` WHERE TRIM(city) = %s AND TRIM(state) = %s LIMIT 1", (city_clean, state_clean)),
@@ -290,8 +270,8 @@ class MySQLCompare:
                             )
                         break
                 except Exception as e:
-                    if self.logger:
-                        self.logger.info(
+                    if self.logger and self.logger.isEnabledFor(10):
+                        self.logger.debug(
                             f"""{hilight("[MySQL]", "info")} city_zip query error: {e}; city={city_clean!r} state={state_clean!r}"""
                         )
                     self._drain_cursor(cursor)
@@ -301,13 +281,8 @@ class MySQLCompare:
             except Exception:
                 pass
             return zip_code
-        if self.logger:
-            if not (cursor and self.config.city_zip_table and _safe_table(self.config.city_zip_table)):
-                self.logger.info(
-                    f"""{hilight("[MySQL]", "info")} city_zip: skipped (cursor=%s, city_zip_table=%r, safe=%s)"""
-                    % (bool(cursor), getattr(self.config, "city_zip_table", None), _safe_table(self.config.city_zip_table) if getattr(self.config, "city_zip_table", None) else False)
-                )
-            self.logger.info(
+        if self.logger and self.logger.isEnabledFor(10):
+            self.logger.debug(
                 f"""{hilight("[MySQL]", "info")} city/state -> zip: {city_clean!r}, {state_clean!r} -> not found"""
             )
         return None
@@ -323,42 +298,18 @@ class MySQLCompare:
     def _resolve_location(self, cursor: Any, listing: Listing) -> Tuple[Optional[str], Optional[int], Optional[int]]:
         """Resolve listing.location to (zip, county_id, region_id). Zip from regex in listing text, or city/state -> zip via city_zip table when geocode_fallback is true."""
         loc = (listing.location or "").strip()
-        if self.logger:
-            self.logger.info(
-                f"""{hilight("[MySQL]", "info")} Zillow comps: resolving location -> {repr(loc)[:100]}"""
-            )
         zip_match = re.search(r"\b(\d{5})(?:-\d{4})?\b", loc)
         zip_code = zip_match.group(1) if zip_match else None
-        if self.logger:
-            self.logger.info(
-                f"""{hilight("[MySQL]", "info")} Zillow comps: zip from regex -> {zip_code or 'none'}"""
-            )
         city_parsed, state_parsed = None, None
         if not zip_code:
             city_parsed, state_parsed, _ = self._parse_location_parts(loc)
             if (city_parsed or state_parsed) and self.config.geocode_fallback:
-                if self.logger:
-                    self.logger.info(
-                        f"""{hilight("[MySQL]", "info")} Zillow comps: city_zip lookup city={repr(city_parsed)} state={repr(state_parsed)}"""
-                    )
                 zip_code = self._geocode_city_state_to_zip(
                     city_parsed or "", state_parsed or "", cursor=cursor
                 )
-                if self.logger:
-                    self.logger.info(
-                        f"""{hilight("[MySQL]", "info")} Zillow comps: city_zip -> zip={zip_code or 'not found'}"""
-                    )
         if not zip_code:
-            if self.logger:
-                self.logger.info(
-                    f"""{hilight("[MySQL]", "info")} Zillow comps: no zip resolved for location={repr(loc)[:80]} (will try city/state if available)"""
-                )
             return (None, None, None)
         if not _safe_table(self.config.zip_county_table) or not _safe_table(self.config.counties_table):
-            if self.logger:
-                self.logger.info(
-                    f"""{hilight("[MySQL]", "info")} Zillow comps: zip={zip_code}, county_id/region_id skipped (tables not configured)"""
-                )
             return (zip_code, None, None)
         county_id: Optional[int] = None
         try:
@@ -384,10 +335,6 @@ class MySQLCompare:
             except Exception:
                 self._drain_cursor(cursor)
         if county_id is None:
-            if self.logger:
-                self.logger.info(
-                    f"""{hilight("[MySQL]", "info")} Zillow comps: zip={zip_code}, county_id=None (county not in zip_county/properties), region_id=None"""
-                )
             return (zip_code, None, None)
         region_id: Optional[int] = None
         try:
@@ -412,10 +359,6 @@ class MySQLCompare:
                 region_id = int(row["region_id"]) if row and isinstance(row, dict) else (int(row[0]) if row else None)
             except Exception:
                 self._drain_cursor(cursor)
-        if self.logger:
-            self.logger.info(
-                f"""{hilight("[MySQL]", "info")} Zillow comps: resolved zip={zip_code}, county_id={county_id}, region_id={region_id}"""
-            )
         return (zip_code, county_id, region_id)
 
     def _fetch_sales_comps(
@@ -470,13 +413,9 @@ class MySQLCompare:
                         [city_clean, state_clean],
                     )
                 )
-        if self.logger and not tries:
-            self.logger.info(
-                f"""{hilight("[MySQL]", "info")} Zillow comps: no location to query (zip={zip_code}, county_id={county_id}, region_id={region_id}, city/state not parsed); skipping comps"""
-            )
-        elif self.logger and tries:
-            self.logger.info(
-                f"""{hilight("[MySQL]", "info")} Zillow comps: trying scopes: {[t[0] for t in tries]}"""
+        if self.logger and self.logger.isEnabledFor(10) and not tries:
+            self.logger.debug(
+                f"""{hilight("[MySQL]", "info")} Zillow comps: no location to query (zip={zip_code}, county_id={county_id}, region_id={region_id}); skipping comps"""
             )
 
         for scope, scope_where, scope_params in tries:
@@ -539,9 +478,9 @@ class MySQLCompare:
                     summary = f"Recent sold comps ({scope}, area):\n" + self._rows_to_summary(rows)
                     return ComparisonResult(summary=summary, rows=rows, raw_text="\n".join(str(r) for r in rows), sales_scope=scope)
 
-        if self.logger:
-            self.logger.info(
-                f"""{hilight("[MySQL]", "info")} Zillow comps: no comps found. Location: zip={zip_code}, county_id={county_id}, region_id={region_id}; scopes tried: {[t[0] for t in tries]}; filters: beds={beds}, baths={baths}, year_built={year_built}"""
+        if self.logger and self.logger.isEnabledFor(10):
+            self.logger.debug(
+                f"""{hilight("[MySQL]", "info")} Zillow comps: no comps found. Location: zip={zip_code}, county_id={county_id}, region_id={region_id}; scopes tried: {[t[0] for t in tries]}"""
             )
         return ComparisonResult(
             summary="No recent sales comps found for this location (zip → county → region → city).",

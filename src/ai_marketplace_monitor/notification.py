@@ -154,8 +154,8 @@ class PushNotificationConfig(NotificationConfig):
     ) -> bool:
         if not self._has_required_fields():
             if logger:
-                logger.debug(
-                    f"Missing required fields  {', '.join(self.required_fields)}. No {self.notify_method} notification sent."
+                logger.warning(
+                    f"Missing required fields {', '.join(self.required_fields)}. No {self.notify_method} notification sent. Check [notification.*] and user notify_with."
                 )
             return False
         #

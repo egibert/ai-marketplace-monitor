@@ -119,8 +119,11 @@ class OllamaMySQLBackend(OllamaBackend):
             prompt += "\n--- End of comparison data ---\n"
             if mysql_cfg and (mysql_cfg.use_sales_comps or mysql_cfg.comparison_table):
                 prompt += (
-                    "\nReply concisely: Rating 1-5, then one short sentence (under 25 words) on whether this is a good deal or not. "
-                    "Do not repeat percentages—the exact price comparison (vs Zillow / vs Facebook averages) will be appended automatically."
+                    "\n**Base your rating (1-5) primarily on the comparison data above, not on the ad description.**\n"
+                    "- Zillow: compare this listing's price to recently sold comps (same area). Price well below average = better deal = higher score; well above average = overpriced = lower score.\n"
+                    "- Facebook: compare to similar listings' asking prices. Below average = better deal = higher score; above average = lower score.\n"
+                    "- Use the ad description only secondarily (e.g. condition, missing details, or red flags) to nudge the score by at most 1 point.\n"
+                    "Reply with: \"Rating <1-5>: <short summary (under 25 words)>.\" Do not repeat percentages—the exact vs Zillow / vs Facebook comparison will be appended automatically."
                 )
         return prompt
 

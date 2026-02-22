@@ -1,0 +1,181 @@
+# ==========================================
+# MARKETPLACE CONFIGURATION
+# ==========================================
+[marketplace.facebook]
+# Optional: Add login if the tool fails to load results anonymously
+username = "your_email@example.com"
+password = ""
+
+# ==========================================
+# REGIONS (use with item search_region for smaller, fresher results)
+# ==========================================
+# Pennsylvania: many cities with small radius (25 mi) to cover the whole state with fresher, smaller result sets.
+# Use search_region = "pa" on items to search these locations instead of one big "pennsylvania" search.
+[region.pa]
+full_name = "Pennsylvania"
+radius = 25
+city_name = [
+    "Pittsburgh, PA",
+    "Philadelphia, PA",
+    "Erie, PA",
+    "State College, PA",
+    "Scranton, PA",
+    "Altoona, PA",
+    "Williamsport, PA",
+    "Lancaster, PA",
+    "Harrisburg, PA",
+    "York, PA",
+    "Reading, PA",
+    "Allentown, PA",
+    "Bethlehem, PA",
+    "Wilkes-Barre, PA",
+    "Johnstown, PA",
+    "Punxsutawney, PA",
+    "DuBois, PA",
+    "Bradford, PA",
+    "Meadville, PA",
+    "Warren, PA",
+    "Uniontown, PA",
+    "Washington, PA",
+    "Greensburg, PA",
+    "Chambersburg, PA",
+    "Gettysburg, PA",
+    "Carlisle, PA",
+    "Lewistown, PA",
+    "Indiana, PA",
+    "Stroudsburg, PA",
+    "East Stroudsburg, PA",
+    "New Castle, PA",
+    "Butler, PA",
+    "Monroeville, PA",
+    "Waynesburg, PA",
+    "Bedford, PA",
+    "Bloomsburg, PA",
+    "Sunbury, PA",
+    "Pottsville, PA",
+    "Hazleton, PA",
+    "Nanticoke, PA",
+    "Tamaqua, PA",
+    "Lebanon, PA",
+    "Hanover, PA",
+    "Waynesboro, PA",
+    "McConnellsburg, PA",
+    "Wellsboro, PA",
+    "Towanda, PA",
+    "Clearfield, PA",
+    "Lock Haven, PA",
+    "Coudersport, PA",
+]
+# Facebook Marketplace location slugs (from marketplace URL). Adjust if your area uses different slugs.
+search_city = [
+    "pittsburgh",
+    "philly",
+    "erie",
+    "statecollege",
+    "scranton",
+    "altoona",
+    "williamsport",
+    "lancaster",
+    "harrisburg",
+    "york",
+    "reading",
+    "allentown",
+    "bethlehem",
+    "wilkesbarre",
+    "johnstown",
+    "punxsutawney",
+    "dubois",
+    "bradford",
+    "meadville",
+    "warren",
+    "uniontown",
+    "washington",
+    "greensburg",
+    "chambersburg",
+    "gettysburg",
+    "carlisle",
+    "lewistown",
+    "indiana",
+    "stroudsburg",
+    "eaststroudsburg",
+    "newcastle",
+    "butler",
+    "monroeville",
+    "waynesburg",
+    "bedford",
+    "bloomsburg",
+    "sunbury",
+    "pottsville",
+    "hazleton",
+    "nanticoke",
+    "tamaqua",
+    "lebanon",
+    "hanover",
+    "waynesboro",
+    "mcconnellsburg",
+    "wellsboro",
+    "towanda",
+    "clearfield",
+    "lockhaven",
+    "coudersport",
+]
+currency = "USD"
+
+[user.me]
+email = "your_email@example.com"
+notify_with = ["telegram"]
+
+# ==========================================
+# ITEMS TO MONITOR
+# ==========================================
+[item.mobilehome]
+search_phrases = ["mobile home", "manufactured home", "must be moved"]
+# Search PA by city with small radius (fresher, smaller result sets per run)
+search_region = "pa"
+# Who to notify when a listing gets a good score (above threshold). Must match a [user.xxx] name.
+notify = ["me"]
+
+# When a listing passes the rating threshold, it is sent to Telegram for users in notify who have notify_with = ["telegram"].
+# Get token from @BotFather; get chat_id by messaging your bot then visiting https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates and reading "chat":{"id":...}.
+[notification.telegram]
+telegram_token = 'YOUR_BOT_TOKEN'
+telegram_chat_id = 'YOUR_CHAT_ID'
+
+[ai.ollama_local]
+provider = "ollama_mysql"
+base_url = "http://localhost:11434/v1"
+model = "mistral"
+
+[ai.ollama_local.mysql]
+host = "localhost"
+port = 3306
+user = "root"
+password = "root"
+database = "pa_mh"
+enabled = true
+
+# City/state -> zip lookup: table populated by python zip.py (no API key needed)
+city_zip_table = "city_zip"
+geocode_fallback = true
+
+# Sales comps (Zillow): zip -> county -> region, filtered by beds/baths/year
+use_sales_comps = true
+sales_max_rows = 10
+sales_table = "sales"
+properties_table = "properties"
+zip_county_table = "zip_county"
+counties_table = "counties"
+year_tolerance = 5
+
+# FB comparison: similar listings from fb_listings
+comparison_table = "fb_listings"
+title_column = "title"
+price_column = "asking_price"
+max_rows = 10
+
+# Insert accepted listings into fb_listings
+insert_into_fb = true
+fb_listings_table = "fb_listings"
+
+# How much DB context in notifications: "full", "short", or "none"
+output_format = "full"
