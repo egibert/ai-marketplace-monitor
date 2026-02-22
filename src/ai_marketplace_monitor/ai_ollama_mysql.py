@@ -54,6 +54,7 @@ class OllamaMySQLConfig(OllamaConfig):
             properties_table=m.get("properties_table", "properties"),
             zip_county_table=m.get("zip_county_table", "zip_county"),
             counties_table=m.get("counties_table", "counties"),
+            city_zip_table=m.get("city_zip_table"),
             year_tolerance=int(m.get("year_tolerance", 5)),
             insert_into_fb=m.get("insert_into_fb", True),
             fb_listings_table=m.get("fb_listings_table", "fb_listings"),

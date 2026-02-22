@@ -50,6 +50,7 @@ sales_table = "sales"
 properties_table = "properties"
 zip_county_table = "zip_county"
 counties_table = "counties"
+city_zip_table = "city_zip"   # optional: table for city/state -> zip (populated by zip.py)
 year_tolerance = 5
 
 # FB comparison: similar listings from fb_listings
@@ -62,7 +63,7 @@ max_rows = 10
 insert_into_fb = true
 fb_listings_table = "fb_listings"
 
-# Resolve city/state → zip via uszipcode (local US zip DB) when no zip in listing. Set false to skip.
+# When true, attempt city/state → zip from city_zip table (populate with: python zip.py).
 # geocode_fallback = true
 
 output_format = "full"
@@ -92,7 +93,7 @@ Parsed from **title** and **description** (e.g. “3 bed”, “2 bath”, “bu
 - **listing.location** is parsed for a 5-digit **zip** (e.g. “Houston, TX 77001” or “77001”).
 - **zip_county** gives **county_id**; **counties** gives **region_id**.
 - Sales comps are queried in order: first by **zip**, then by **county**, then by **region** until results are found.
-- **City/state → zip:** When there’s no 5-digit zip in the listing text, the code resolves zip from **city + state** via **uszipcode** (local US zip database, no API key). Set **geocode_fallback = false** to skip when no zip is in the listing.
+- **City/state → zip:** Zip is taken **only from the listing text** (regex for a 5-digit US zip). If no zip is found and **geocode_fallback** is true, the app looks up **(city, state)** in the **city_zip** table (populated by `python zip.py` from uszips.csv). So after running the zip script, listings with only city/state can resolve to a zip. Otherwise you need the listing to include a zip (e.g. “Polk, PA 16342”) or comps will show “no comps.”
 
 ### 3. Sales comps query
 
@@ -127,6 +128,7 @@ Parsed from **title** and **description** (e.g. “3 bed”, “2 bath”, “bu
 | **regions**          | Region names |
 | **counties**         | county_name, region_id |
 | **zip_county**       | zip → county_id |
+| **city_zip**         | city, state, zip (for city/state → zip; populate with `python zip.py`) |
 | **properties**       | Zillow properties: beds, baths, year_built, zip, county_id, region_id |
 | **sales**            | property_id, sale_price, sale_date |
 | **fb_listings**      | external_id, title, description, asking_price, city, state, zip, beds, baths, county_id, region_id, url, posted_date |
@@ -141,6 +143,7 @@ Parsed from **title** and **description** (e.g. “3 bed”, “2 bath”, “bu
 | **use_sales_comps**   | Query sales + properties (zip→county→region) by beds/baths/year (default false). |
 | **sales_max_rows**    | Max sold comps per scope (default 10). |
 | **sales_table**, **properties_table**, **zip_county_table**, **counties_table** | Table names for sales comps. |
+| **city_zip_table**   | Table for city/state → zip lookup (default `city_zip`; set to empty to disable). |
 | **year_tolerance**    | ± years for year_built filter (default 5). |
 | **comparison_table**  | Table for FB comparison (e.g. fb_listings). |
 | **title_column**, **price_column** | Columns for FB comparison (e.g. title, asking_price). |
@@ -151,7 +154,7 @@ Parsed from **title** and **description** (e.g. “3 bed”, “2 bath”, “bu
 | **comparison_query**  | Custom SQL (placeholders {title}, {price}, {location}, {item_name}). Overrides built-in comparison when set. |
 | **max_rows**          | Max rows for FB comparison (default 10). |
 | **output_format**     | DB context in notifications: "full", "short", or "none". |
-| **geocode_fallback**  | When true (default), resolve city/state → zip via uszipcode (local US zip DB) when no zip in listing. Set false to skip. No API key needed. |
+| **geocode_fallback**  | When true (default), attempt to resolve city/state → zip; currently zip is only from listing text (no external provider). |
 | **lot_rent_table**    | Optional. Table for average lot rent lookup (e.g. lot_rents). When set and lot rent is not in the listing description, a line like "Average lot rent (zip 16428): $400" is appended. Lookup order: zip → county → region. |
 | **lot_rent_zip_column**, **lot_rent_county_column**, **lot_rent_region_column**, **lot_rent_value_column** | Column names for lot rent table (defaults: zip, county_id, region_id, avg_rent). |
 

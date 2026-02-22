@@ -48,6 +48,8 @@ class MySQLConfig:
     properties_table: str = "properties"
     zip_county_table: str = "zip_county"
     counties_table: str = "counties"
+    # Table for city/state -> zip (populated by zip.py from uszips.csv). Set to None to disable.
+    city_zip_table: Optional[str] = "city_zip"
     # Year tolerance for age filter (e.g. ±5 years)
     year_tolerance: int = 5
 
@@ -62,7 +64,7 @@ class MySQLConfig:
     # Connection timeout (seconds); avoid hanging if MySQL is unreachable
     connection_timeout: int = 10
 
-    # When true (default), resolve city/state -> zip via uszipcode (local US zip DB) when no zip in listing text.
+    # When true (default), attempt to resolve city/state -> zip (currently no provider; zip must be in listing text or add one).
     geocode_fallback: bool = True
 
     # --- Average lot rent (when not in listing description): query by zip → county → region
@@ -220,8 +222,10 @@ class MySQLCompare:
                 pass
             self._client = None
 
-    def _geocode_city_state_to_zip(self, city: str, state: str) -> Optional[str]:
-        """Resolve city, state to zip via uszipcode (local US zip DB). Results are cached."""
+    def _geocode_city_state_to_zip(
+        self, city: str, state: str, cursor: Any = None
+    ) -> Optional[str]:
+        """Resolve city, state to zip via cache and, if configured, city_zip table (populated by zip.py)."""
         if not city and not state:
             return None
         city_clean = (city or "").strip()
@@ -236,43 +240,36 @@ class MySQLCompare:
                 return str(cached) if cached else None
         except Exception:
             pass
-        try:
-            from uszipcode import SearchEngine  # type: ignore
-
-            search = SearchEngine()
-            zipcodes = search.by_city_and_state(city_clean, state_clean, returns=10)
-            search.close()
-            if zipcodes:
-                zip_obj = zipcodes[0]
-                zip_code = getattr(zip_obj, "zipcode", None)
-                if zip_code is not None:
-                    zip_code = str(zip_code).strip()
-                    if len(zip_code) < 5:
-                        zip_code = zip_code.zfill(5)
-                    if re.match(r"^\d{5}$", zip_code):
-                        try:
-                            cache.set(cache_key, zip_code, tag="geocode_zip")
-                        except Exception:
-                            pass
-                        if self.logger and self.logger.isEnabledFor(10):
-                            self.logger.debug(
-                                f"""{hilight("[MySQL]", "info")} uszipcode: {city_clean!r}, {state_clean!r} -> zip={zip_code}"""
-                            )
-                        return zip_code
-            if self.logger and self.logger.isEnabledFor(10):
-                self.logger.debug(
-                    f"""{hilight("[MySQL]", "info")} uszipcode: {city_clean!r}, {state_clean!r} -> no zip found"""
+        zip_code: Optional[str] = None
+        if (
+            cursor
+            and self.config.city_zip_table
+            and _safe_table(self.config.city_zip_table)
+        ):
+            try:
+                cursor.execute(
+                    f"SELECT zip FROM `{self.config.city_zip_table}` WHERE LOWER(TRIM(city)) = LOWER(TRIM(%s)) AND LOWER(TRIM(state)) = LOWER(TRIM(%s)) LIMIT 1",
+                    (city_clean, state_clean),
                 )
-        except ImportError as e:
-            if self.logger:
-                self.logger.warning(
-                    f"""{hilight("[MySQL]", "fail")} uszipcode not installed; pip install uszipcode: {e}"""
-                )
-        except Exception as e:
-            if self.logger:
-                self.logger.warning(
-                    f"""{hilight("[MySQL]", "fail")} uszipcode failed for {city_clean!r}, {state_clean!r}: {e}"""
-                )
+                row = cursor.fetchone()
+                self._drain_cursor(cursor)
+                if row:
+                    zip_code = (
+                        row.get("zip", row[0]) if isinstance(row, dict) else row[0]
+                    )
+                    zip_code = str(zip_code).strip() if zip_code else None
+            except Exception:
+                self._drain_cursor(cursor)
+        if zip_code:
+            try:
+                cache.set(cache_key, zip_code)
+            except Exception:
+                pass
+            return zip_code
+        if self.logger and self.logger.isEnabledFor(10):
+            self.logger.debug(
+                f"""{hilight("[MySQL]", "info")} city/state -> zip: {city_clean!r}, {state_clean!r} -> not found (zip only from listing text or city_zip table)"""
+            )
         return None
 
     def _drain_cursor(self, cursor: Any) -> None:
@@ -284,7 +281,7 @@ class MySQLCompare:
             pass
 
     def _resolve_location(self, cursor: Any, listing: Listing) -> Tuple[Optional[str], Optional[int], Optional[int]]:
-        """Resolve listing.location to (zip, county_id, region_id). Zip from regex in text, else uszipcode (city/state -> zip)."""
+        """Resolve listing.location to (zip, county_id, region_id). Zip from regex in listing text, or city/state -> zip via city_zip table when geocode_fallback is true."""
         loc = (listing.location or "").strip()
         zip_match = re.search(r"\b(\d{5})(?:-\d{4})?\b", loc)
         zip_code = zip_match.group(1) if zip_match else None
@@ -295,10 +292,12 @@ class MySQLCompare:
         if not zip_code:
             city, state, _ = self._parse_location_parts(loc)
             if (city or state) and self.config.geocode_fallback:
-                zip_code = self._geocode_city_state_to_zip(city or "", state or "")
+                zip_code = self._geocode_city_state_to_zip(
+                    city or "", state or "", cursor=cursor
+                )
                 if self.logger and self.logger.isEnabledFor(10):
                     self.logger.debug(
-                        f"""{hilight("[MySQL]", "info")} Zillow comps: after uszipcode city={repr(city)} state={repr(state)} -> zip={zip_code}"""
+                        f"""{hilight("[MySQL]", "info")} Zillow comps: city={repr(city)} state={repr(state)} -> zip={zip_code}"""
                     )
         if not zip_code:
             if self.logger and self.logger.isEnabledFor(10):
